@@ -56,6 +56,20 @@ python3 -m venv .venv
 
 Windows 10/11 需要 WebView2 运行时（新系统一般自带，没有的话从微软官网安装）。
 
+### GitHub 自动打包
+
+仓库里的 `.github/workflows/build.yml` 会在每次推送到 `main` 时，在 GitHub 的 Windows 和 Mac 机器上各打一个包，并用网页模式启动一次做冒烟测试：
+
+- 下载：仓库的 **Actions** 页 → 点最新一次「打包」→ 页面底部 Artifacts 里的 `EngineerScheduler-windows` / `EngineerScheduler-macos-arm64`（保留 30 天）。
+- 发版：打一个 `v` 开头的标签并推送，两个包会自动发布到 **Releases**：
+
+```bash
+git tag v1.0.0
+git push origin v1.0.0
+```
+
+Mac 包只支持 Apple 芯片（M 系列），而且没有苹果开发者签名：第一次打开如果提示“无法验证开发者”或“已损坏”，在终端执行 `xattr -dr com.apple.quarantine /Applications/工程师排班管理.app` 后再打开（路径换成实际位置）。Windows 首次运行可能出现 SmartScreen 提示，点「更多信息 → 仍要运行」。
+
 ## 数据存放位置
 
 - Windows：`%APPDATA%\EngineerScheduler\`
