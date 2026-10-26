@@ -41,6 +41,23 @@ def _dispatch_counts(db: DB, day_from: str, day_to: str) -> dict:
     return {(r["engineer_id"], r["day"], r["slot"]): r["n"] for r in rows}
 
 
+JOB_SQL = """
+SELECT d.id AS dispatch_id, d.day, d.slot, d.engineer_id, d.customer, d.address, d.order_no, d.source,
+       o.id AS order_id, o.udesk_no, o.service_order_no, o.d365_status, o.status AS order_status,
+       o.appointment, o.problem, o.order_type, o.serial, o.model, o.contact
+FROM dispatches d
+LEFT JOIN orders o ON (d.booking_id IS NOT NULL AND o.d365_id = substr(d.booking_id, 4))
+                   OR (d.booking_id IS NULL AND d.order_no <> '' AND o.service_order_no = d.order_no)
+WHERE d.day BETWEEN ? AND ?
+ORDER BY d.day, d.slot, o.appointment, d.id
+"""
+
+
+def jobs_between(db: DB, day_from: str, day_to: str) -> list[dict]:
+    """派单记录 + 对应的订单（D365 工单）信息。"""
+    return db.q(JOB_SQL, (day_from, day_to))
+
+
 def schedule_grid(db: DB, start: str, days: int) -> dict:
     days = max(1, min(int(days), 366))
     dates = _days(start, days)
@@ -48,6 +65,11 @@ def schedule_grid(db: DB, start: str, days: int) -> dict:
     raw = {(r["engineer_id"], r["day"], r["slot"]): r["status"]
            for r in db.q("SELECT * FROM schedule WHERE day BETWEEN ? AND ?", (dates[0], dates[-1]))}
     cnt = _dispatch_counts(db, dates[0], dates[-1])
+    jobs: dict = {}
+    for j in jobs_between(db, dates[0], dates[-1]):
+        jobs.setdefault((j["engineer_id"], j["day"], j["slot"]), []).append({
+            "order_id": j["order_id"], "no": j["service_order_no"] or j["order_no"], "udesk_no": j["udesk_no"],
+            "customer": j["customer"], "d365_status": j["d365_status"], "appointment": j["appointment"]})
     rows = []
     totals = {"外勤": {}, "驻点": {}}
     for e in engs:
@@ -59,7 +81,7 @@ def schedule_grid(db: DB, start: str, days: int) -> dict:
                 state = "normal"
                 if n:
                     state = "conflict" if base_status(r, e["type"]) in BLOCKING else "dispatched"
-                cells[f"{d}|{s}"] = {"raw": r, "n": n, "state": state}
+                cells[f"{d}|{s}"] = {"raw": r, "n": n, "state": state, "jobs": jobs.get(k, [])}
                 bucket = totals.setdefault(e["type"], {})
                 bucket[f"{d}|{s}"] = bucket.get(f"{d}|{s}", 0) + (1 if is_available(r, e["type"], n) else 0)
         rows.append({**e, "cells": cells})
@@ -68,22 +90,27 @@ def schedule_grid(db: DB, start: str, days: int) -> dict:
 
 def day_status(db: DB, day: str, slot: str) -> dict:
     out = []
+    all_jobs = jobs_between(db, day, day)
     for e in db.engineers():
         raw = db.cell(e["id"], day, slot)
-        n_day = db.one("SELECT COUNT(*) AS n FROM dispatches WHERE day=? AND engineer_id=?", (day, e["id"]))["n"]
-        n_slot = db.one("SELECT COUNT(*) AS n FROM dispatches WHERE day=? AND engineer_id=? AND slot=?",
-                        (day, e["id"], slot))["n"]
-        jobs = db.q("SELECT slot, customer, address, order_no FROM dispatches WHERE day=? AND engineer_id=? "
-                    "ORDER BY slot DESC, id", (day, e["id"]))
+        jobs = [j for j in all_jobs if j["engineer_id"] == e["id"]]
+        n_slot = sum(1 for j in jobs if j["slot"] == slot)
         out.append({
             "id": e["id"], "name": e["name"], "type": e["type"],
             "schedule": base_status(raw, e["type"]),
             "status": effective_status(raw, e["type"], n_slot),
             "available": is_available(raw, e["type"], n_slot),
-            "day_count": n_day, "slot_count": n_slot, "jobs": jobs,
+            "day_count": len(jobs), "slot_count": n_slot, "jobs": jobs,
         })
+    # 当天所有预约上门的 D365 工单（包括人员表以外的工程师）
+    engs = db.engineers()
+    orders = db.q("SELECT id, udesk_no, service_order_no, customer, engineer, d365_status, status, appointment, "
+                  "address, order_type, problem FROM orders WHERE substr(appointment, 1, 10)=? "
+                  "ORDER BY appointment, id", (day,))
+    for o in orders:
+        o["local"] = (match_engineer(engs, o["engineer"]) or {}).get("name", "")
     return {
-        "day": day, "slot": slot, "rows": out,
+        "day": day, "slot": slot, "rows": out, "orders": orders,
         "field_available": sum(1 for r in out if r["type"] == "外勤" and r["available"]),
         "site_on_duty": sum(1 for r in out if r["type"] == "驻点" and r["available"]),
     }

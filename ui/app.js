@@ -258,6 +258,7 @@ async function loadSchedule() {
   const start = $('#s-start').value, days = $('#s-days').value;
   const g = await safe(() => api('schedule', start, days));
   if (!g) return;
+  S.grid = g;
   api('save_settings', {schedule_start: start, schedule_days: Number(days)});
   const head1 = g.dates.map(d => {
     const w = new Date(d + 'T00:00:00').getDay();
@@ -269,7 +270,8 @@ async function loadSchedule() {
       const c = r.cells[`${d}|${s}`];
       const shown = c.raw || '';
       const cls = c.state !== 'normal' ? c.state : (c.raw ? 'st-' + c.raw : 'st-blank');
-      const tip = c.n ? `该时段已派 ${c.n} 单` + (c.state === 'conflict' ? `，但排班为「${c.raw}」` : '') : '';
+      const tip = c.n ? `该时段已派 ${c.n} 单` + (c.state === 'conflict' ? `，但排班为「${c.raw}」` : '') + '\n' +
+        c.jobs.map(j => `${j.appointment ? j.appointment.slice(11) + ' ' : ''}${j.no || ''} ${j.customer || ''}${j.d365_status ? '（' + j.d365_status + '）' : ''}`).join('\n') : '';
       return `<td class="cell ${cls} ${i ? 'pm' : ''}" data-e="${r.id}" data-d="${d}" data-s="${s}" title="${esc(tip)}">
         ${esc(shown)}${c.n ? `<span class="n">${c.n}</span>` : ''}</td>`;
     }).join('')).join('') + '</tr>').join('');
@@ -285,14 +287,22 @@ async function loadSchedule() {
 function cellMenu(td, x, y) {
   const m = $('#menu');
   const colors = {空闲: '--s-free', 外出: '--s-out', 驻点: '--s-site', 休假: '--s-leave', 培训: '--s-train', 休息: '--s-rest'};
-  m.innerHTML = S.boot.statuses.map(s => `<button data-v="${s}"><span class="sw" style="background:var(${colors[s]})"></span>${s}</button>`).join('') +
+  const row = (S.grid?.rows || []).find(r => r.id === +td.dataset.e);
+  const jobs = row ? row.cells[`${td.dataset.d}|${td.dataset.s}`].jobs : [];
+  m.innerHTML = (jobs.length ? `<div class="menu-head">${esc(row.name)} ${esc(td.dataset.d.slice(5))} ${esc(td.dataset.s)} 的工单</div>` +
+    jobs.map(j => `<button class="job-btn" ${j.order_id ? `data-order="${j.order_id}"` : 'disabled'}>
+      <b class="mono">${esc(j.no || '无工单号')}</b> ${esc(j.customer || '')}
+      <span class="muted small">${esc(j.appointment ? j.appointment.slice(11) : '')} ${esc(j.d365_status || '')}</span></button>`).join('') +
+    '<div class="menu-head">改排班状态</div>' : '') + S.boot.statuses.map(s => `<button data-v="${s}"><span class="sw" style="background:var(${colors[s]})"></span>${s}</button>`).join('') +
     '<button data-v=""><span class="sw"></span>清空</button>';
   m.hidden = false;
   m.style.left = Math.min(x, innerWidth - 140) + 'px';
   m.style.top = Math.min(y, innerHeight - 260) + 'px';
+  m.style.top = Math.max(8, Math.min(y, innerHeight - m.offsetHeight - 8)) + 'px';
   m.onclick = e => {
     const b = e.target.closest('button'); if (!b) return;
     m.hidden = true;
+    if (b.dataset.order) { openOrder(+b.dataset.order); return; }
     safe(async () => { await api('set_cell', +td.dataset.e, td.dataset.d, td.dataset.s, b.dataset.v); loadSchedule(); });
   };
 }
@@ -302,14 +312,42 @@ async function loadToday() {
   const r = await safe(() => api('day_status', $('#t-day').value, $('#t-slot').value));
   if (!r) return;
   const k = (label, n, unit) => `<div class="kpi ${n === 0 ? 'z' : n === 1 ? 'o' : ''}"><span class="muted">${label}</span><b>${n}</b>${unit}</div>`;
-  $('#t-kpis').innerHTML = k('外勤可派', r.field_available, '人') + k('驻点在岗', r.site_on_duty, '人');
-  $('#t-table').innerHTML = `<thead><tr><th>姓名</th><th>类型</th><th>该时段状态</th><th>当天派单数</th><th>该时段派单数</th>
-    <th>排班表标注</th><th>当天派单</th></tr></thead><tbody>` + r.rows.map(x => {
+  $('#t-kpis').innerHTML = k('外勤可派', r.field_available, '人') + k('驻点在岗', r.site_on_duty, '人') +
+    `<div class="kpi"><span class="muted">当天 D365 预约</span><b>${r.orders.length}</b>单</div>`;
+  $('#t-cards').innerHTML = r.rows.map(x => {
     const cls = x.status.startsWith('⚠') ? 'conflict' : x.slot_count ? 'dispatched' : 'st-' + x.schedule;
-    return `<tr><td><b>${esc(x.name)}</b></td><td>${esc(x.type)}</td><td><span class="badge ${cls}">${esc(x.status)}</span></td>
-      <td>${x.day_count}</td><td>${x.slot_count}</td><td>${esc(x.schedule)}</td>
-      <td class="wrap">${x.jobs.map(j => `${esc(j.slot)}：${esc(j.customer)} ${j.order_no ? '<span class="mono muted">' + esc(j.order_no) + '</span>' : ''}`).join('<br>') || '<span class="muted">—</span>'}</td></tr>`;
-  }).join('') + '</tbody>';
+    return `<div class="eng-card">
+      <div class="row"><b>${esc(x.name)}</b><span class="muted small">${esc(x.type)}</span>
+        <span class="badge ${cls}" style="margin-left:auto">${esc(x.status)}</span></div>
+      <div class="muted small">排班：${esc(x.schedule)} · 当天 ${x.day_count} 单 · ${esc(r.slot)} ${x.slot_count} 单</div>
+      ${x.jobs.length ? x.jobs.map(jobHtml).join('') : '<div class="muted small job-empty">当天没有工单</div>'}
+    </div>`;
+  }).join('');
+  $('#t-orders').innerHTML = r.orders.length ? `<thead><tr><th>预约上门</th><th>工程师</th><th>服务订单号</th><th>Udesk 工单号</th>
+    <th>客户</th><th>问题</th><th>D365 状态</th><th>设备地址</th></tr></thead><tbody>` + r.orders.map(o => `
+    <tr class="click" data-order="${o.id}"><td class="nowrap">${esc(o.appointment.slice(11))}</td>
+      <td class="nowrap">${esc(o.engineer) || '<span class="muted">未派工</span>'}${o.local ? `<span class="tag">${esc(o.local)}</span>` : ''}</td>
+      <td class="mono nowrap">${esc(o.service_order_no)}${o.order_type ? `<span class="tag">${esc(o.order_type)}</span>` : ''}</td>
+      <td class="mono nowrap">${esc(o.udesk_no)}</td><td>${esc(o.customer)}</td>
+      <td class="wrap">${esc((o.problem || '').slice(0, 100))}</td>
+      <td><span class="badge b-${esc(o.status)}">${esc(o.d365_status || o.status)}</span></td>
+      <td class="wrap">${esc(o.address)}</td></tr>`).join('') + '</tbody>'
+    : '<tr><td class="empty">这一天没有预约上门的 D365 工单</td></tr>';
+}
+
+// 一条派单（关联的 D365 工单）的小卡片，点击打开工单详情
+function jobHtml(j) {
+  const no = j.service_order_no || j.order_no;
+  return `<div class="job ${j.order_id ? 'click' : ''}" ${j.order_id ? `data-order="${j.order_id}"` : ''}>
+    <div class="row"><span class="tag slot">${esc(j.slot)}</span>
+      ${j.appointment ? `<span class="small">${esc(j.appointment.slice(11))}</span>` : ''}
+      <b class="mono small">${esc(no) || '无工单号'}</b>${j.udesk_no ? `<span class="mono muted small">${esc(j.udesk_no)}</span>` : ''}
+      ${j.d365_status ? `<span class="badge b-${esc(j.order_status)}" style="margin-left:auto">${esc(j.d365_status)}</span>`
+        : `<span class="tag" style="margin-left:auto">${j.source === 'd365' ? 'D365' : '手工'}</span>`}</div>
+    <div>${esc(j.customer)}</div>
+    ${j.problem ? `<div class="muted small clip">${esc(j.problem)}</div>` : ''}
+    ${j.address ? `<div class="muted small clip">📍 ${esc(j.address)}</div>` : ''}
+  </div>`;
 }
 
 // ======================= 派单 =======================
@@ -481,6 +519,11 @@ async function init() {
   $('#s-today').onclick = () => { $('#s-start').value = monday(S.boot.today); loadSchedule(); };
   $('#s-table').onclick = e => { const td = e.target.closest('td.cell'); if (td) { e.stopPropagation(); cellMenu(td, e.clientX, e.clientY); } };
   document.addEventListener('click', e => { if (!e.target.closest('#menu')) $('#menu').hidden = true; });
+  // 今日查询 / 派单等处带 data-order 的工单，点击打开工单详情
+  $('#main').addEventListener('click', e => {
+    const el = e.target.closest('[data-order]');
+    if (el && !e.target.closest('#v-orders')) openOrder(+el.dataset.order);
+  });
   document.addEventListener('keydown', e => { if (e.key === 'Escape') { $('#menu').hidden = true; $('#drawer').hidden = true; } });
 
   // 今日
