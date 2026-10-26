@@ -61,6 +61,15 @@ python3 -m venv .venv
 
 Windows 10/11 需要 WebView2 运行时（新系统一般自带，没有的话从微软官网安装）。
 
+### 在线更新
+
+软件启动时会自动检查 GitHub Releases 有没有新版本（可在「设置」里关闭，也可以手动点「检查更新」）。有新版本时左上角出现绿色的「⬆ 新版本」按钮，点开能看到更新内容，「下载并更新」→「立即重启更新」后，软件会关闭、替换成新版本并自动重新打开。数据库和 D365 登录状态在系统的应用数据目录里，更新不受影响。
+
+- 发布新版本：改好代码推送后，打一个更大的版本标签（如 `v1.1.0`）并推送，CI 会把标签号写进程序并发布安装包，客户端就能检测到。
+- Windows 版如果放在 `C:\Program Files` 这类需要管理员权限的目录，自动替换会失败；请放在用户自己的目录（如桌面、文档）。
+- Mac 版只支持 Apple 芯片；在线更新下载的新版本不会被系统标记为“来自网络”，所以不会再弹出“无法验证开发者”。
+- v1.0.0 还没有在线更新功能，需要手动下载一次 v1.1.0 及以后的版本，之后就能在线更新了。
+
 ### GitHub 自动打包
 
 仓库里的 `.github/workflows/build.yml` 会在每次推送到 `main` 时，在 GitHub 的 Windows 和 Mac 机器上各打一个包，并用网页模式启动一次做冒烟测试：
@@ -92,6 +101,8 @@ backend/browser.py    Playwright 驱动 Chrome/Edge，保持 D365 登录、调 W
 backend/d365.py       mcs_serviceorder 查询与字段映射
 backend/sync.py       同步流程（拉单 → 订单清单 → 派单/排班）
 backend/excel_io.py   Excel 导入导出
+backend/updater.py    在线更新（检查 GitHub Releases、下载、替换并重启）
+backend/version.py    版本号（发版时由 CI 按标签写入）
 backend/api.py        界面调用的接口
 ui/                   界面（HTML/CSS/JS，无外部依赖）
 ```

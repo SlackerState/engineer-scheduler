@@ -505,6 +505,60 @@ async function startSync() {
   updateSyncState();
 }
 
+// ======================= 在线更新 =======================
+function showUpdatePill(st) {
+  const b = $('#btn-update');
+  b.hidden = !st.available;
+  b.textContent = `⬆ 新版本 ${st.latest}`;
+}
+
+async function checkUpdate(manual) {
+  if (manual) $('#u-msg').textContent = '检查中…';
+  const st = await api('update_check').catch(() => null);
+  if (!st) return;
+  $('#u-msg').textContent = st.message || '';
+  showUpdatePill(st);
+  if (manual && st.available) updateDialog();
+}
+
+function updateDialog() {
+  let timer;
+  const close = modal(`<h2>软件更新</h2><div id="ud-body"></div><div class="actions" id="ud-actions"></div>`, (box, close) => {
+    const render = st => {
+      const pct = st.progress || 0;
+      $('#ud-body', box).innerHTML = `<div>当前版本 <b>${esc(st.current)}</b> → 新版本 <b>${esc(st.latest)}</b>
+          ${st.size ? `<span class="muted small">（${(st.size / 1048576).toFixed(0)} MB）</span>` : ''}</div>
+        ${st.notes ? `<div class="sec">更新内容</div><pre class="log notes">${esc(st.notes)}</pre>` : ''}
+        ${['downloading', 'extracting', 'ready'].includes(st.phase)
+          ? `<div class="bar-outer"><div class="bar-inner" style="width:${pct}%"></div></div>` : ''}
+        <div class="muted small">${esc(st.message || '')}</div>
+        ${!st.can_apply ? '<div class="check"><span class="bad">当前是开发模式运行，只能检查，不能自动替换程序。</span></div>' : ''}`;
+      const a = $('#ud-actions', box);
+      if (st.phase === 'ready') a.innerHTML = '<button data-close>稍后</button><button class="primary" id="ud-apply">立即重启更新</button>';
+      else if (st.phase === 'downloading' || st.phase === 'extracting') a.innerHTML = '<button data-close>后台下载</button>';
+      else if (st.phase === 'restarting') a.innerHTML = '';
+      else a.innerHTML = `<button data-close>以后再说</button>${st.available && st.can_apply ? '<button class="primary" id="ud-dl">下载并更新</button>' : ''}`;
+    };
+    const poll = async () => {
+      const st = await api('update_state').catch(() => null);
+      if (!st) return;
+      render(st);
+      if (['downloading', 'extracting'].includes(st.phase)) timer = setTimeout(poll, 500);
+    };
+    box.addEventListener('click', async e => {
+      if ('close' in e.target.dataset) { clearTimeout(timer); close(); }
+      if (e.target.id === 'ud-dl') { await safe(() => api('update_download')); poll(); }
+      if (e.target.id === 'ud-apply') {
+        if (!await safe(() => api('update_apply'))) return;
+        $('#ud-body', box).innerHTML = '<div>正在关闭并更新，几秒后新版本会自动打开…</div>';
+        $('#ud-actions', box).innerHTML = '';
+      }
+    });
+    poll();
+  });
+  return close;
+}
+
 // ======================= 初始化 =======================
 async function init() {
   S.boot = await api('bootstrap');
@@ -623,6 +677,13 @@ async function init() {
     a.download = r.name; a.click();
   });
   $('#x-dir').onclick = () => api('open_data_dir');
+
+  // 更新
+  $('#app-ver').textContent = 'v' + S.boot.version;
+  $('#u-cur').textContent = S.boot.version;
+  $('#btn-update').onclick = updateDialog;
+  $('#u-check').onclick = () => checkUpdate(true);
+  if (S.boot.settings.auto_check_update) setTimeout(() => checkUpdate(false), 3000);
 
   updateSyncState();
   setInterval(updateSyncState, 20000);

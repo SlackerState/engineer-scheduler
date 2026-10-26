@@ -30,6 +30,11 @@ input[type=search] { width: 280px; }
 .side { width: 176px; background: var(--side); color: var(--side-ink); display: flex; flex-direction: column; flex: none; }
 .brand { font-size: 16px; font-weight: 600; color: #fff; padding: 18px 16px 14px; }
 .brand small { display: block; font-size: 11px; font-weight: 400; color: var(--side-ink); opacity: .7; margin-top: 2px; }
+.update-pill { margin: 0 14px 10px; background: #2e7d32; color: #fff; border: none; border-radius: 99px; font-size: 12px; padding: 5px 10px; }
+.update-pill:hover { background: #276b2b; }
+.bar-outer { height: 8px; background: var(--line); border-radius: 99px; overflow: hidden; }
+.bar-inner { height: 100%; background: var(--accent); transition: width .3s; }
+.log.notes { max-height: 220px; color: var(--ink); background: #f8f9fb; padding: 8px 10px; border-radius: 6px; }
 nav a { display: block; padding: 9px 16px; cursor: pointer; border-left: 3px solid transparent; }
 nav a:hover { background: rgba(255,255,255,.05); }
 nav a.on { background: rgba(255,255,255,.08); color: #fff; border-left-color: #6ea0ff; }

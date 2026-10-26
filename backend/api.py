@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import base64
 import json
+import threading
 import webbrowser
 from datetime import date, datetime, timedelta
 
@@ -11,6 +12,8 @@ from .browser import Browser, NeedLogin
 from .d365 import D365, normalize
 from .db import DB, ORDER_EDITABLE, ORDER_STATUSES, SLOTS, STATUSES, app_dir
 from .sync import Syncer
+from .updater import Updater
+from .version import __version__
 
 
 class Api:
@@ -19,6 +22,8 @@ class Api:
         self._browser = Browser(app_dir(), self._db.settings)
         self._d365 = D365(self._browser, self._db.settings)
         self._sync = Syncer(self._db, self._d365)
+        self._updater = Updater(self._db.settings)
+        self._updater.cleanup_old()
         self._window = None  # 桌面模式下由 main.py 注入，用于文件对话框
 
     # ---------- 基础 ----------
@@ -29,8 +34,37 @@ class Api:
             "statuses": STATUSES, "order_statuses": ORDER_STATUSES, "slots": SLOTS,
             "today": date.today().isoformat(),
             "slot_now": "上午" if datetime.now().hour < noon else "下午",
-            "desktop": self._window is not None, "data_dir": str(app_dir()),
+            "desktop": self._window is not None, "data_dir": str(app_dir()), "version": __version__,
         }
+
+    # ---------- 在线更新 ----------
+    def update_check(self):
+        try:
+            return self._updater.check()
+        except Exception as e:  # noqa: BLE001 - 网络问题不影响使用
+            return {**self._updater.state, "available": False, "message": f"检查更新失败：{e}"}
+
+    def update_download(self):
+        return self._updater.start_download()
+
+    def update_state(self):
+        return self._updater.state
+
+    def update_apply(self):
+        """启动替换脚本后退出本程序，脚本会替换文件并重新打开新版本。"""
+        self._updater.apply()
+
+        def quit_soon():
+            import os
+            import time
+            time.sleep(0.8)
+            if self._window is not None:
+                self._window.destroy()  # main.py 随后关闭浏览器并退出
+            else:
+                self.shutdown()
+                os._exit(0)
+        threading.Thread(target=quit_soon, daemon=True).start()
+        return {"ok": True}
 
     def save_settings(self, data):
         return self._db.save_settings(data)

@@ -46,6 +46,8 @@ DEFAULT_SETTINGS = {
     # 同步
     "auto_sync": False,
     "sync_interval_min": 15,
+    "auto_check_update": True,
+    "update_api_url": "",  # 留空 = GitHub Releases 最新版本
     "browser_channel": "auto",
     "headless": True,
     "noon_hour": 12,
