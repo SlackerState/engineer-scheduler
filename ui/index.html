@@ -1,0 +1,172 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>工程师排班管理</title>
+<link rel="stylesheet" href="app.css">
+</head>
+<body>
+<aside class="side">
+  <div class="brand">排班管理<small>Udesk · D365</small></div>
+  <nav id="nav">
+    <a data-view="orders" class="on">订单清单</a>
+    <a data-view="schedule">排班表</a>
+    <a data-view="today">今日查询</a>
+    <a data-view="dispatch">派单</a>
+    <a data-view="people">人员</a>
+    <a data-view="settings">设置</a>
+  </nav>
+  <div class="side-foot">
+    <div id="login-state" class="pill">D365：未检查</div>
+    <button id="btn-sync" class="primary block">同步 D365</button>
+    <div id="sync-msg" class="muted small"></div>
+  </div>
+</aside>
+<main id="main">
+
+<section id="v-orders" class="view on">
+  <header class="bar">
+    <h1>订单清单</h1>
+    <div class="tools">
+      <select id="o-status">
+        <option value="未完成">未完成</option><option value="">全部</option>
+        <option>待处理</option><option>处理中</option><option>已完成</option><option>已取消</option>
+      </select>
+      <select id="o-eng"><option value="">全部工程师</option></select>
+      <input id="o-kw" type="search" placeholder="搜索订单号 / SVC / 客户 / 序列号 / 问题">
+      <button id="o-find">查 D365 订单</button>
+      <button id="o-new">手工新增</button>
+    </div>
+  </header>
+  <div class="table-wrap"><table class="grid" id="o-table"></table></div>
+</section>
+
+<section id="v-schedule" class="view">
+  <header class="bar">
+    <h1>排班表</h1>
+    <div class="tools">
+      <button id="s-prev" title="上一周">‹</button>
+      <input id="s-start" type="date">
+      <button id="s-next" title="下一周">›</button>
+      <button id="s-today">本周</button>
+      <select id="s-days"><option value="7">7 天</option><option value="14">14 天</option><option value="28">28 天</option><option value="56">56 天</option></select>
+    </div>
+  </header>
+  <div class="legend">
+    <span class="st-空闲">空闲</span><span class="st-外出">外出</span><span class="st-驻点">驻点</span>
+    <span class="st-休假">休假</span><span class="st-培训">培训</span><span class="st-休息">休息</span>
+    <span class="dispatched">已派单</span><span class="conflict">冲突</span>
+    <span class="muted">点格子改状态；留空 = 外勤空闲 / 驻点在岗</span>
+  </div>
+  <div class="table-wrap"><table class="sched" id="s-table"></table></div>
+</section>
+
+<section id="v-today" class="view">
+  <header class="bar">
+    <h1>今日查询</h1>
+    <div class="tools">
+      <input id="t-day" type="date">
+      <select id="t-slot"><option>上午</option><option>下午</option></select>
+      <button id="t-now">现在</button>
+    </div>
+  </header>
+  <div class="kpis" id="t-kpis"></div>
+  <div class="table-wrap"><table class="grid" id="t-table"></table></div>
+</section>
+
+<section id="v-dispatch" class="view">
+  <header class="bar"><h1>派单</h1></header>
+  <div class="split">
+    <form id="d-form" class="card form" autocomplete="off">
+      <h2>派单录入</h2>
+      <label>日期<input name="day" type="date" required></label>
+      <label>时段<select name="slot"><option>上午</option><option>下午</option></select></label>
+      <label>工程师<select name="engineer_id" id="d-eng"></select></label>
+      <label>客户<input name="customer"></label>
+      <label>地址<input name="address"></label>
+      <label>工单号<input name="order_no"></label>
+      <label>预计时长(小时)<input name="hours" type="number" min="0" step="0.5"></label>
+      <div id="d-check" class="check"></div>
+      <button class="primary" type="submit">提交派单</button>
+    </form>
+    <div class="card">
+      <h2>该时段人员状态</h2>
+      <table class="grid compact" id="d-people"></table>
+    </div>
+  </div>
+  <header class="bar sub">
+    <h2>派单记录</h2>
+    <div class="tools">
+      <input id="r-from" type="date"> 至 <input id="r-to" type="date">
+      <button id="r-clear">全部</button>
+    </div>
+  </header>
+  <div class="table-wrap"><table class="grid" id="r-table"></table></div>
+</section>
+
+<section id="v-people" class="view">
+  <header class="bar">
+    <h1>人员</h1>
+    <div class="tools"><button id="p-add" class="primary">添加工程师</button></div>
+  </header>
+  <p class="muted note">「D365 别名」填 D365 里显示的工程师全名（如 Lee Ryan、Winzar Charles），多个用逗号分隔；不填时按姓名中任一单词自动匹配。类型决定排班表底部统计口径：外勤算「外勤可派」，驻点算「驻点在岗」。</p>
+  <div class="table-wrap"><table class="grid" id="p-table"></table></div>
+</section>
+
+<section id="v-settings" class="view">
+  <header class="bar"><h1>设置</h1></header>
+  <div class="cards">
+    <div class="card form" id="set-d365">
+      <h2>D365 登录</h2>
+      <p class="muted">点「登录 D365」会弹出浏览器窗口，用公司账号登录（含 MFA）。登录成功后窗口会自动关闭并开始同步，之后软件在后台复用这个登录状态。平时直接点「同步 D365」也行：没登录时会自动弹出登录窗口。</p>
+      <div class="row">
+        <button id="b-login" class="primary">登录 D365</button>
+        <button id="b-login-check">检查登录</button>
+      </div>
+      <div id="login-msg" class="muted small"></div>
+    </div>
+    <form class="card form" id="set-form">
+      <h2>同步设置</h2>
+      <label>D365 网址<input name="d365_url"></label>
+      <label>D365 应用 ID（打开订单链接用）<input name="d365_appid"></label>
+      <label>订单来源（mcs_ordersource，60 = Udesk，多个用逗号）<input name="order_sources"></label>
+      <label>只同步该服务网点（留空 = 全部）<input name="network_filter"></label>
+      <label>同步最近多少天创建的订单<input name="lookback_days" type="number" min="1"></label>
+      <label class="chk"><input name="d365_status_overrides_local" type="checkbox"> 用 D365 订单状态更新本地状态</label>
+      <label class="chk"><input name="d365_to_dispatch" type="checkbox"> 把 D365「预约上门时间」自动写入派单记录和排班表</label>
+      <label class="chk"><input name="auto_sync" type="checkbox"> 自动同步</label>
+      <label>自动同步间隔（分钟）<input name="sync_interval_min" type="number" min="1"></label>
+      <label>上午/下午分界（几点算下午）<input name="noon_hour" type="number" min="0" max="23"></label>
+      <label>浏览器<select name="browser_channel">
+        <option value="auto">自动（Windows 用 Edge，Mac 用 Chrome）</option>
+        <option value="chrome">Google Chrome</option><option value="msedge">Microsoft Edge</option>
+        <option value="chromium">Playwright 自带 Chromium</option></select></label>
+      <label class="chk"><input name="headless" type="checkbox"> 同步时浏览器在后台运行（不弹窗口）</label>
+      <button class="primary" type="submit">保存设置</button>
+    </form>
+    <div class="card form">
+      <h2>Excel</h2>
+      <p class="muted">导入原来的「工程师排班表.xlsm」：人员、排班表、派单记录、订单清单都会导入，重复记录自动跳过。</p>
+      <div class="row">
+        <label class="btn">导入 Excel<input id="x-file" type="file" accept=".xlsx,.xlsm" hidden></label>
+        <button id="x-export">导出 Excel</button>
+        <button id="x-dir">打开数据目录</button>
+      </div>
+      <div id="x-msg" class="muted small"></div>
+    </div>
+    <div class="card">
+      <h2>同步日志</h2>
+      <pre id="sync-log" class="log"></pre>
+    </div>
+  </div>
+</section>
+</main>
+
+<div id="drawer" class="drawer" hidden></div>
+<div id="modal" class="modal" hidden><div class="modal-box"></div></div>
+<div id="menu" class="menu" hidden></div>
+<div id="toast" class="toast" hidden></div>
+<script src="app.js"></script>
+</body>
+</html>

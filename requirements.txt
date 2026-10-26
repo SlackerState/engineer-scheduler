@@ -1,0 +1,4 @@
+pywebview>=5.3
+playwright>=1.48
+openpyxl>=3.1
+pyinstaller>=6.10

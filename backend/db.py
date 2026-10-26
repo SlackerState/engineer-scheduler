@@ -1,0 +1,229 @@
+"""SQLite 存储：人员、排班、派单记录、订单清单、设置。"""
+from __future__ import annotations
+
+import json
+import os
+import sqlite3
+import sys
+import threading
+from datetime import date, timedelta
+from pathlib import Path
+
+STATUSES = ["空闲", "外出", "驻点", "休假", "培训", "休息"]
+ORDER_STATUSES = ["待处理", "处理中", "已完成", "已取消"]
+SLOTS = ["上午", "下午"]
+
+
+def app_dir() -> Path:
+    override = os.environ.get("ES_DATA_DIR")
+    if override:
+        d = Path(override)
+    elif sys.platform == "win32":
+        d = Path(os.environ.get("APPDATA", Path.home())) / "EngineerScheduler"
+    elif sys.platform == "darwin":
+        d = Path.home() / "Library" / "Application Support" / "EngineerScheduler"
+    else:
+        d = Path(os.environ.get("XDG_DATA_HOME", Path.home() / ".local" / "share")) / "EngineerScheduler"
+    d.mkdir(parents=True, exist_ok=True)
+    return d
+
+
+def _monday(d: date) -> date:
+    return d - timedelta(days=d.weekday())
+
+
+DEFAULT_SETTINGS = {
+    # D365（Udesk 创建的服务订单都会推送到 D365 的 mcs_serviceorder，来源 = Udesk）
+    "d365_url": "https://sany.crm4.dynamics.com",
+    "d365_appid": "686a745d-1b06-ef11-9f8b-6045bd8c985b",
+    "d365_api_version": "v9.2",
+    "order_sources": "60",          # mcs_ordersource：60 = Udesk，多个用逗号
+    "network_filter": "UK Kent 01 S",  # 服务网点，留空 = 不过滤
+    "lookback_days": 30,
+    "d365_status_overrides_local": True,
+    "d365_to_dispatch": True,
+    # 同步
+    "auto_sync": False,
+    "sync_interval_min": 15,
+    "browser_channel": "auto",
+    "headless": True,
+    "noon_hour": 12,
+    # 排班表显示
+    "schedule_start": "",
+    "schedule_days": 14,
+}
+
+SCHEMA = """
+CREATE TABLE IF NOT EXISTS engineers (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    seq INTEGER NOT NULL DEFAULT 0,
+    name TEXT NOT NULL UNIQUE,
+    type TEXT NOT NULL DEFAULT '外勤',
+    phone TEXT DEFAULT '',
+    remark TEXT DEFAULT '',
+    aliases TEXT DEFAULT ''
+);
+CREATE TABLE IF NOT EXISTS schedule (
+    engineer_id INTEGER NOT NULL REFERENCES engineers(id) ON DELETE CASCADE,
+    day TEXT NOT NULL,
+    slot TEXT NOT NULL,
+    status TEXT NOT NULL,
+    PRIMARY KEY (engineer_id, day, slot)
+);
+CREATE TABLE IF NOT EXISTS dispatches (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    day TEXT NOT NULL,
+    engineer_id INTEGER NOT NULL REFERENCES engineers(id) ON DELETE CASCADE,
+    slot TEXT NOT NULL,
+    customer TEXT DEFAULT '',
+    address TEXT DEFAULT '',
+    order_no TEXT DEFAULT '',
+    hours REAL,
+    source TEXT DEFAULT 'manual',
+    booking_id TEXT,
+    created_at TEXT DEFAULT (datetime('now', 'localtime'))
+);
+CREATE INDEX IF NOT EXISTS ix_dispatch_day ON dispatches(day, slot);
+CREATE UNIQUE INDEX IF NOT EXISTS ux_dispatch_booking ON dispatches(booking_id, day, slot) WHERE booking_id IS NOT NULL;
+CREATE TABLE IF NOT EXISTS orders (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    day TEXT DEFAULT '',
+    service_order_no TEXT DEFAULT '',
+    loan_no TEXT DEFAULT '',
+    customer TEXT DEFAULT '',
+    serial TEXT DEFAULT '',
+    problem TEXT DEFAULT '',
+    engineer TEXT DEFAULT '',
+    status TEXT DEFAULT '待处理',
+    progress TEXT DEFAULT '',
+    udesk_no TEXT DEFAULT '',
+    order_type TEXT DEFAULT '',
+    d365_id TEXT UNIQUE,
+    d365_status TEXT DEFAULT '',
+    d365_status_code INTEGER,
+    appointment TEXT DEFAULT '',
+    dispatch_time TEXT DEFAULT '',
+    setoff_time TEXT DEFAULT '',
+    arrival_time TEXT DEFAULT '',
+    complete_time TEXT DEFAULT '',
+    address TEXT DEFAULT '',
+    contact TEXT DEFAULT '',
+    network TEXT DEFAULT '',
+    model TEXT DEFAULT '',
+    warranty TEXT DEFAULT '',
+    d365_json TEXT DEFAULT '',
+    synced_at TEXT DEFAULT '',
+    created_at TEXT DEFAULT (datetime('now', 'localtime')),
+    updated_at TEXT DEFAULT (datetime('now', 'localtime'))
+);
+CREATE TABLE IF NOT EXISTS settings (
+    key TEXT PRIMARY KEY,
+    value TEXT NOT NULL
+);
+"""
+
+ORDER_EDITABLE = [
+    "day", "service_order_no", "loan_no", "customer", "serial",
+    "problem", "engineer", "status", "progress",
+]
+
+
+class DB:
+    def __init__(self, path: Path | None = None):
+        self.path = path or app_dir() / "data.db"
+        self.lock = threading.RLock()
+        self.conn = sqlite3.connect(str(self.path), check_same_thread=False)
+        self.conn.row_factory = sqlite3.Row
+        self.conn.execute("PRAGMA foreign_keys = ON")
+        self.conn.executescript(SCHEMA)
+        self.conn.commit()
+
+    # ---------- 通用 ----------
+    def q(self, sql: str, params=()) -> list[dict]:
+        with self.lock:
+            return [dict(r) for r in self.conn.execute(sql, params).fetchall()]
+
+    def one(self, sql: str, params=()) -> dict | None:
+        rows = self.q(sql, params)
+        return rows[0] if rows else None
+
+    def x(self, sql: str, params=()) -> int:
+        with self.lock:
+            cur = self.conn.execute(sql, params)
+            self.conn.commit()
+            return cur.lastrowid
+
+    # ---------- 设置 ----------
+    def settings(self) -> dict:
+        s = dict(DEFAULT_SETTINGS)
+        for r in self.q("SELECT key, value FROM settings"):
+            s[r["key"]] = json.loads(r["value"])
+        if not s["schedule_start"]:
+            s["schedule_start"] = _monday(date.today()).isoformat()
+        return s
+
+    def save_settings(self, data: dict) -> dict:
+        with self.lock:
+            for k, v in data.items():
+                if k in DEFAULT_SETTINGS:
+                    self.conn.execute(
+                        "INSERT INTO settings(key, value) VALUES(?, ?) "
+                        "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                        (k, json.dumps(v, ensure_ascii=False)),
+                    )
+            self.conn.commit()
+        return self.settings()
+
+    # ---------- 人员 ----------
+    def engineers(self) -> list[dict]:
+        return self.q("SELECT * FROM engineers ORDER BY seq, id")
+
+    def save_engineer(self, e: dict) -> int:
+        fields = (e.get("name", "").strip(), e.get("type") or "外勤",
+                  e.get("phone", ""), e.get("remark", ""), e.get("aliases", ""))
+        if not fields[0]:
+            raise ValueError("姓名不能为空")
+        if e.get("id"):
+            self.x("UPDATE engineers SET name=?, type=?, phone=?, remark=?, aliases=? WHERE id=?",
+                   (*fields, e["id"]))
+            return e["id"]
+        seq = (self.one("SELECT COALESCE(MAX(seq), 0) + 1 AS n FROM engineers") or {"n": 1})["n"]
+        return self.x("INSERT INTO engineers(seq, name, type, phone, remark, aliases) VALUES(?,?,?,?,?,?)",
+                      (seq, *fields))
+
+    def delete_engineer(self, eid: int):
+        self.x("DELETE FROM engineers WHERE id=?", (eid,))
+
+    def move_engineer(self, eid: int, delta: int):
+        rows = self.engineers()
+        idx = next((i for i, r in enumerate(rows) if r["id"] == eid), None)
+        if idx is None:
+            return
+        j = idx + delta
+        if 0 <= j < len(rows):
+            rows[idx], rows[j] = rows[j], rows[idx]
+        with self.lock:
+            for i, r in enumerate(rows, 1):
+                self.conn.execute("UPDATE engineers SET seq=? WHERE id=?", (i, r["id"]))
+            self.conn.commit()
+
+    # ---------- 排班 ----------
+    def set_cell(self, eid: int, day: str, slot: str, status: str):
+        if status:
+            self.x("INSERT INTO schedule(engineer_id, day, slot, status) VALUES(?,?,?,?) "
+                   "ON CONFLICT(engineer_id, day, slot) DO UPDATE SET status = excluded.status",
+                   (eid, day, slot, status))
+        else:
+            self.x("DELETE FROM schedule WHERE engineer_id=? AND day=? AND slot=?", (eid, day, slot))
+
+    def cell(self, eid: int, day: str, slot: str) -> str:
+        r = self.one("SELECT status FROM schedule WHERE engineer_id=? AND day=? AND slot=?", (eid, day, slot))
+        return r["status"] if r else ""
+
+    # ---------- 订单 ----------
+    def update_order(self, oid: int, fields: dict):
+        if not fields:
+            return
+        cols = ", ".join(f"{k}=?" for k in fields)
+        self.x(f"UPDATE orders SET {cols}, updated_at=datetime('now','localtime') WHERE id=?",
+               (*fields.values(), oid))

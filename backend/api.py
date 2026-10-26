@@ -1,0 +1,195 @@
+"""界面调用的接口。桌面窗口里经 pywebview 的 js_api 调用，网页模式下经 server.py 的 /api/<方法名> 调用。"""
+from __future__ import annotations
+
+import base64
+import json
+import webbrowser
+from datetime import date, datetime
+
+from . import excel_io, logic
+from .browser import Browser, NeedLogin
+from .d365 import D365, normalize
+from .db import DB, ORDER_EDITABLE, ORDER_STATUSES, SLOTS, STATUSES, app_dir
+from .sync import Syncer
+
+
+class Api:
+    def __init__(self, db: DB | None = None):
+        self._db = db or DB()
+        self._browser = Browser(app_dir(), self._db.settings)
+        self._d365 = D365(self._browser, self._db.settings)
+        self._sync = Syncer(self._db, self._d365)
+        self._window = None  # 桌面模式下由 main.py 注入，用于文件对话框
+
+    # ---------- 基础 ----------
+    def bootstrap(self):
+        noon = int(self._db.settings().get("noon_hour") or 12)
+        return {
+            "settings": self._db.settings(), "engineers": self._db.engineers(),
+            "statuses": STATUSES, "order_statuses": ORDER_STATUSES, "slots": SLOTS,
+            "today": date.today().isoformat(),
+            "slot_now": "上午" if datetime.now().hour < noon else "下午",
+            "desktop": self._window is not None, "data_dir": str(app_dir()),
+        }
+
+    def save_settings(self, data):
+        return self._db.save_settings(data)
+
+    # ---------- 人员 ----------
+    def list_engineers(self):
+        return self._db.engineers()
+
+    def save_engineer(self, data):
+        return self._db.save_engineer(data)
+
+    def delete_engineer(self, eid):
+        self._db.delete_engineer(int(eid))
+
+    def move_engineer(self, eid, delta):
+        self._db.move_engineer(int(eid), int(delta))
+
+    # ---------- 排班 ----------
+    def schedule(self, start, days):
+        return logic.schedule_grid(self._db, start, days)
+
+    def set_cell(self, eid, day, slot, status):
+        if status and status not in STATUSES:
+            raise ValueError(f"未知状态：{status}")
+        self._db.set_cell(int(eid), day, slot, status)
+
+    def day_status(self, day, slot):
+        return logic.day_status(self._db, day, slot)
+
+    # ---------- 派单 ----------
+    def check_dispatch(self, form):
+        return logic.check_dispatch(self._db, form)
+
+    def submit_dispatch(self, form, force=False):
+        return logic.submit_dispatch(self._db, form, bool(force))
+
+    def list_dispatches(self, day_from="", day_to=""):
+        return logic.list_dispatches(self._db, day_from, day_to)
+
+    def delete_dispatch(self, did):
+        self._db.x("DELETE FROM dispatches WHERE id=?", (int(did),))
+
+    # ---------- 订单 ----------
+    def list_orders(self, status="", keyword="", engineer=""):
+        sql, p = "SELECT * FROM orders WHERE 1=1", []
+        if status == "未完成":
+            sql += " AND status NOT IN ('已完成','已取消')"
+        elif status:
+            sql += " AND status=?"
+            p.append(status)
+        if engineer:
+            sql += " AND engineer LIKE ?"
+            p.append(f"%{engineer}%")
+        if keyword:
+            sql += (" AND (service_order_no LIKE ? OR udesk_no LIKE ? OR customer LIKE ? OR serial LIKE ? "
+                    "OR problem LIKE ? OR progress LIKE ? OR loan_no LIKE ?)")
+            p += [f"%{keyword}%"] * 7
+        sql += " ORDER BY day DESC, id DESC"
+        rows = self._db.q(sql, p)
+        for r in rows:
+            r.pop("d365_json", None)
+        return rows
+
+    def get_order(self, oid):
+        o = self._db.one("SELECT * FROM orders WHERE id=?", (int(oid),))
+        if o and o.get("d365_id"):
+            o["d365_link"] = self._d365.record_url(o["d365_id"])
+        return o
+
+    def save_order(self, data):
+        fields = {k: (data.get(k) or "") for k in ORDER_EDITABLE if k in data}
+        if data.get("id"):
+            self._db.update_order(int(data["id"]), fields)
+            return int(data["id"])
+        cols = list(fields)
+        return self._db.x(f"INSERT INTO orders({','.join(cols)}) VALUES({','.join('?' * len(cols))})",
+                          list(fields.values()))
+
+    def delete_order(self, oid):
+        o = self._db.one("SELECT d365_id FROM orders WHERE id=?", (int(oid),))
+        if o and o["d365_id"]:
+            self._db.x("DELETE FROM dispatches WHERE booking_id=?", (f"so:{o['d365_id']}",))
+        self._db.x("DELETE FROM orders WHERE id=?", (int(oid),))
+
+    def open_url(self, url):
+        webbrowser.open(url)
+
+    # ---------- D365 ----------
+    def login_d365(self):
+        """弹出登录窗口，登录成功后自动关窗并同步一次。"""
+        return self._sync.start(login_first=True)
+
+    def check_login(self):
+        try:
+            me = self._d365.whoami()
+            self._sync.state["need_login"] = False
+            return {"ok": True, "user_id": me.get("UserId", "")}
+        except NeedLogin as e:
+            self._sync.state["need_login"] = True
+            return {"ok": False, "message": str(e)}
+        except Exception as e:  # noqa: BLE001
+            return {"ok": False, "message": str(e)}
+
+    def find_d365(self, number):
+        try:
+            rows = [normalize(r) for r in self._d365.find(number)]
+        except NeedLogin as e:
+            return {"ok": False, "need_login": True, "message": str(e)}
+        for r in rows:
+            r.pop("d365_json", None)
+            r["d365_link"] = self._d365.record_url(r["d365_id"])
+            r["exists"] = bool(self._db.one("SELECT id FROM orders WHERE d365_id=?", (r["d365_id"],)))
+        return {"ok": True, "rows": rows}
+
+    def add_from_d365(self, number):
+        recs = self._d365.find(number)
+        engineers = self._db.engineers()
+        s = self._db.settings()
+        for rec in recs:
+            row = normalize(rec)
+            self._sync.upsert(row, s)
+            if s.get("d365_to_dispatch", True):
+                self._sync.sync_dispatch(row, engineers)
+        return len(recs)
+
+    def start_sync(self):
+        return self._sync.start()
+
+    def sync_state(self):
+        return self._sync.state
+
+    # ---------- Excel ----------
+    def import_excel(self, b64):
+        return excel_io.import_workbook(self._db, base64.b64decode(b64))
+
+    def export_excel(self, start, days):
+        data = excel_io.export_workbook(self._db, start, int(days))
+        name = f"工程师排班表_{date.today():%Y%m%d}.xlsx"
+        if self._window is not None:
+            import webview
+            path = self._window.create_file_dialog(webview.SAVE_DIALOG, save_filename=name,
+                                                   file_types=("Excel 文件 (*.xlsx)",))
+            if not path:
+                return {"saved": False}
+            path = path if isinstance(path, str) else path[0]
+            with open(path, "wb") as f:
+                f.write(data)
+            return {"saved": True, "path": path}
+        return {"saved": False, "name": name, "b64": base64.b64encode(data).decode()}
+
+    def open_data_dir(self):
+        webbrowser.open(app_dir().as_uri())
+
+    def shutdown(self):
+        self._browser.shutdown()
+
+
+def call(api: Api, method: str, args: list):
+    """网页模式的分发入口：只允许调用公开方法。"""
+    if method.startswith("_") or not callable(getattr(api, method, None)):
+        raise AttributeError(f"没有这个接口：{method}")
+    return json.loads(json.dumps(getattr(api, method)(*args), ensure_ascii=False, default=str))
