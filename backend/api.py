@@ -4,7 +4,7 @@ from __future__ import annotations
 import base64
 import json
 import webbrowser
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 
 from . import excel_io, logic
 from .browser import Browser, NeedLogin
@@ -93,6 +93,25 @@ class Api:
         for r in rows:
             r.pop("d365_json", None)
         return rows
+
+    def orders_since(self, day, status=""):
+        """创建日期在 day 及之后的工单，按创建时间倒序。"""
+        sql, p = "SELECT * FROM orders WHERE day >= ?", [day]
+        if status == "未完成":
+            sql += " AND status NOT IN ('已完成','已取消')"
+        elif status:
+            sql += " AND status=?"
+            p.append(status)
+        rows = self._db.q(sql + " ORDER BY day DESC, id DESC", p)
+        for r in rows:
+            r.pop("d365_json", None)
+        lookback = int(self._db.settings().get("lookback_days") or 30)
+        earliest = (date.today() - timedelta(days=lookback)).isoformat()
+        return {"rows": rows, "synced_from": earliest, "beyond_sync": day < earliest}
+
+    def sync_since(self, day):
+        """从 D365 拉取 day 及之后创建的工单（超出平时同步范围时用）。"""
+        return self._sync.start(since=day)
 
     def get_order(self, oid):
         o = self._db.one("SELECT * FROM orders WHERE id=?", (int(oid),))

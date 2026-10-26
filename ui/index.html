@@ -77,6 +77,20 @@
   <div class="eng-cards" id="t-cards"></div>
   <header class="bar sub"><h2>当天预约上门的 D365 工单</h2><span class="muted small">点一行查看 / 改派</span></header>
   <div class="table-wrap"><table class="grid" id="t-orders"></table></div>
+  <header class="bar sub">
+    <h2>按创建日期查工单</h2>
+    <div class="tools">
+      <label class="muted">创建日期从 <input id="c-from" type="date"></label>
+      <span class="muted">起</span>
+      <select id="c-status">
+        <option value="">全部状态</option><option value="未完成">未完成</option>
+        <option>待处理</option><option>处理中</option><option>已完成</option><option>已取消</option>
+      </select>
+      <span id="c-count" class="muted"></span>
+    </div>
+  </header>
+  <div id="c-hint" class="check" hidden></div>
+  <div class="table-wrap"><table class="grid" id="c-table"></table></div>
 </section>
 
 <section id="v-dispatch" class="view">

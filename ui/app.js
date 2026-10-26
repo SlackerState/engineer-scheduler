@@ -333,6 +333,30 @@ async function loadToday() {
       <td><span class="badge b-${esc(o.status)}">${esc(o.d365_status || o.status)}</span></td>
       <td class="wrap">${esc(o.address)}</td></tr>`).join('') + '</tbody>'
     : '<tr><td class="empty">这一天没有预约上门的 D365 工单</td></tr>';
+  await loadCreated();
+}
+
+// 按创建日期查工单：选中日期及之后创建的工单
+async function loadCreated() {
+  const from = $('#c-from').value;
+  if (!from) return;
+  const r = await safe(() => api('orders_since', from, $('#c-status').value));
+  if (!r) return;
+  $('#c-count').textContent = `共 ${r.rows.length} 单`;
+  const hint = $('#c-hint');
+  hint.hidden = !r.beyond_sync;
+  if (r.beyond_sync) hint.innerHTML = `平时只同步最近的工单（${esc(r.synced_from)} 起），更早创建的可能不全。
+    <button class="primary" id="c-pull">从 D365 拉取 ${esc(from)} 起的工单</button>`;
+  $('#c-table').innerHTML = r.rows.length ? `<thead><tr><th>创建日期</th><th>服务订单号</th><th>Udesk 工单号</th><th>客户</th>
+    <th>机器序列号</th><th>问题</th><th>工程师</th><th>状态</th><th>D365 状态</th><th>预约上门</th></tr></thead><tbody>` +
+    r.rows.map(o => `<tr class="click" data-order="${o.id}">
+      <td class="nowrap">${esc(o.day)}</td>
+      <td class="mono nowrap">${esc(o.service_order_no)}${o.order_type ? `<span class="tag">${esc(o.order_type)}</span>` : ''}</td>
+      <td class="mono nowrap">${esc(o.udesk_no)}</td><td>${esc(o.customer)}</td><td class="mono">${esc(o.serial)}</td>
+      <td class="wrap">${esc((o.problem || '').slice(0, 100))}</td><td class="nowrap">${esc(o.engineer) || '<span class="muted">未派工</span>'}</td>
+      <td><span class="badge b-${esc(o.status)}">${esc(o.status)}</span></td>
+      <td class="nowrap">${esc(o.d365_status)}</td><td class="nowrap">${esc(o.appointment)}</td></tr>`).join('') + '</tbody>'
+    : '<tr><td class="empty">这个日期之后没有创建的工单</td></tr>';
 }
 
 // 一条派单（关联的 D365 工单）的小卡片，点击打开工单详情
@@ -530,6 +554,15 @@ async function init() {
   $('#t-day').onchange = loadToday;
   $('#t-slot').onchange = loadToday;
   $('#t-now').onclick = () => { $('#t-day').value = S.boot.today; $('#t-slot').value = S.boot.slot_now; loadToday(); };
+  $('#c-from').value = addDays(S.boot.today, -7);
+  $('#c-from').onchange = loadCreated;
+  $('#c-status').onchange = loadCreated;
+  $('#c-hint').onclick = async e => {
+    if (e.target.id !== 'c-pull') return;
+    if (!await safe(() => api('sync_since', $('#c-from').value))) { toast('正在同步中，请稍候'); return; }
+    S.wasRunning = true;
+    updateSyncState();
+  };
 
   // 派单
   $('#d-form').onchange = refreshDispatchCheck;

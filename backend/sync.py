@@ -27,12 +27,13 @@ class Syncer:
     def _log(self, msg: str):
         self.state["log"] = (self.state["log"] + [f"{datetime.now():%H:%M:%S} {msg}"])[-200:]
 
-    def start(self, interactive: bool = True, login_first: bool = False) -> bool:
-        """interactive：没登录时弹出登录窗口（自动同步时不弹）；login_first：先登录再同步。"""
+    def start(self, interactive: bool = True, login_first: bool = False, since: str | None = None) -> bool:
+        """interactive：没登录时弹出登录窗口（自动同步时不弹）；login_first：先登录再同步；
+        since：'YYYY-MM-DD'，拉取这天及之后创建的订单（默认按设置里的回看天数）。"""
         if not self.lock.acquire(blocking=False):
             return False
         self.state.update(running=True, message="同步中…")
-        threading.Thread(target=self._run_locked, args=(interactive, login_first),
+        threading.Thread(target=self._run_locked, args=(interactive, login_first, since),
                          name="sync", daemon=True).start()
         return True
 
@@ -44,17 +45,17 @@ class Syncer:
         self._log("D365 登录成功")
         self.state["message"] = "登录成功，同步中…"
 
-    def _run_locked(self, interactive: bool, login_first: bool):
+    def _run_locked(self, interactive: bool, login_first: bool, since: str | None = None):
         try:
             if login_first:
                 self._login()
             try:
-                summary = self.run()
+                summary = self.run(since)
             except NeedLogin:
                 if not interactive or login_first:
                     raise
                 self._login()
-                summary = self.run()
+                summary = self.run(since)
             self.state.update(ok=True, need_login=False, message=summary)
         except NeedLogin as e:
             self.state.update(ok=False, need_login=True, message=f"{e}，请点「同步 D365」重新登录")
@@ -78,12 +79,15 @@ class Syncer:
                 self.start(interactive=False)
 
     # ---------- 主流程 ----------
-    def run(self) -> str:
+    def run(self, since_day: str | None = None) -> str:
         s = self.db.settings()
         sources = [int(x) for x in str(s.get("order_sources") or "").replace("，", ",").split(",") if x.strip()]
         network = (s.get("network_filter") or "").strip()
-        since = datetime.now(timezone.utc) - timedelta(days=int(s.get("lookback_days") or 30))
-        self._log("从 D365 拉取订单…")
+        if since_day:  # 本机当天 0 点
+            since = datetime.fromisoformat(since_day).astimezone().astimezone(timezone.utc)
+        else:
+            since = datetime.now(timezone.utc) - timedelta(days=int(s.get("lookback_days") or 30))
+        self._log(f"从 D365 拉取 {since.astimezone():%Y-%m-%d} 之后创建的订单…")
         recs = self.d365.list_orders(since, sources)
         seen = {r["mcs_serviceorderid"] for r in recs}
         # 回看期之外、但本地还没完结的订单也刷新一下状态
