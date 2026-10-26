@@ -103,6 +103,44 @@ jobs:
           if ($html.Content -notmatch "es-mode") { Write-Host "页面内容不对"; exit 1 }
           Write-Host "打包后的程序启动正常"
 
+      - name: 自检（Windows：各组件能否加载）
+        if: runner.os == 'Windows'
+        shell: pwsh
+        timeout-minutes: 3
+        run: |
+          $exe = Join-Path (Get-Location) "dist\$env:APP_NAME\$env:APP_NAME.exe"
+          $out = Join-Path $env:RUNNER_TEMP "selftest.json"
+          Start-Process -FilePath $exe -ArgumentList "--selftest", $out -Wait
+          Get-Content $out -Encoding utf8
+          $r = Get-Content $out -Encoding utf8 | ConvertFrom-Json
+          if ($r.error -or -not $r.ui -or -not $r.edge) { Write-Host "自检失败"; exit 1 }
+
+      - name: 冒烟测试（Windows：桌面窗口模式，Edge 应用窗口）
+        if: runner.os == 'Windows'
+        shell: pwsh
+        timeout-minutes: 5
+        run: |
+          $env:ES_DATA_DIR = Join-Path $env:RUNNER_TEMP "es-data-desktop"
+          $env:ES_PORT = "8766"
+          $exe = Join-Path (Get-Location) "dist\$env:APP_NAME\$env:APP_NAME.exe"
+          $p = Start-Process -FilePath $exe -PassThru
+          $ok = $false
+          for ($i = 0; $i -lt 45; $i++) {
+            if ($p.HasExited) { break }
+            try {
+              $r = Invoke-RestMethod -Method Post -Uri "http://127.0.0.1:8766/api/bootstrap" -Body "[]" -TimeoutSec 5
+              if ($r.ok) { $ok = $true; break }
+            } catch { Start-Sleep -Seconds 2 }
+          }
+          Start-Sleep -Seconds 3
+          $edge = Get-CimInstance Win32_Process -Filter "Name = 'msedge.exe'" | Where-Object { $_.CommandLine -like "*es-ui-*" }
+          Write-Host "Edge 应用窗口进程数：$(@($edge).Count)"
+          $edge | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
+          Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue
+          if (-not $ok) { Write-Host "桌面模式没有启动"; if ($p.HasExited) { Write-Host "退出码：$($p.ExitCode)" }; exit 1 }
+          if (@($edge).Count -eq 0) { Write-Host "没有打开 Edge 窗口"; exit 1 }
+          Write-Host "桌面模式启动正常"
+
       - name: 压缩（Mac）
         if: runner.os == 'macOS'
         run: ditto -c -k --keepParent "dist/$APP_NAME.app" "${{ matrix.artifact }}.zip"

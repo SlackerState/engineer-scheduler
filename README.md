@@ -59,7 +59,7 @@ python3 -m venv .venv
 - Mac：`./build_mac.sh` → `dist/工程师排班管理.app`
 - Windows：双击 `build_windows.bat` → `dist\工程师排班管理\工程师排班管理.exe`（整个文件夹一起复制给同事）
 
-Windows 10/11 需要 WebView2 运行时（新系统一般自带，没有的话从微软官网安装）。
+Windows 版的窗口用系统自带的 Edge 以「应用模式」打开（没有地址栏，关掉窗口即退出程序），不依赖 .NET；找不到 Edge 时才退回 pywebview。
 
 ### 在线更新
 

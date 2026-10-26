@@ -25,6 +25,7 @@ class Api:
         self._updater = Updater(self._db.settings)
         self._updater.cleanup_old()
         self._window = None  # 桌面模式下由 main.py 注入，用于文件对话框
+        self._ui_proc = None  # Windows 的 Edge 应用窗口进程，由 main.py 注入
 
     # ---------- 基础 ----------
     def bootstrap(self):
@@ -60,6 +61,8 @@ class Api:
             time.sleep(0.8)
             if self._window is not None:
                 self._window.destroy()  # main.py 随后关闭浏览器并退出
+            elif self._ui_proc is not None:
+                self._ui_proc.terminate()  # 关掉 Edge 应用窗口，main.py 随后退出
             else:
                 self.shutdown()
                 os._exit(0)

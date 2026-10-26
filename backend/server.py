@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import mimetypes
+import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
@@ -11,7 +12,8 @@ from .api import Api, call
 BLOCKED = {"shutdown"}
 
 
-def serve(api: Api, ui_dir: Path, host: str = "127.0.0.1", port: int = 8765):
+def serve(api: Api, ui_dir: Path, host: str = "127.0.0.1", port: int = 8765, background: bool = False):
+    """background=True 时在后台线程运行并返回 server 对象（Edge 应用窗口模式用）。"""
     class Handler(BaseHTTPRequestHandler):
         def log_message(self, *a):
             pass
@@ -52,6 +54,9 @@ def serve(api: Api, ui_dir: Path, host: str = "127.0.0.1", port: int = 8765):
             self._send(200, json.dumps(body, ensure_ascii=False).encode(), "application/json; charset=utf-8")
 
     httpd = ThreadingHTTPServer((host, port), Handler)
+    if background:
+        threading.Thread(target=httpd.serve_forever, name="http", daemon=True).start()
+        return httpd
     try:  # 打包后的 Windows 程序没有控制台，或控制台编码不支持中文
         print(f"网页模式已启动：http://{host}:{port}", flush=True)
     except Exception:
