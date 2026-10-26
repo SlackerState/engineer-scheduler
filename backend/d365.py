@@ -7,7 +7,7 @@
 from __future__ import annotations
 
 import json
-from datetime import datetime
+from datetime import datetime, timezone
 from urllib.parse import quote
 
 from .browser import Browser
@@ -106,6 +106,59 @@ class D365:
     def find(self, number: str) -> list[dict]:
         n = _q(number.strip())
         return self._query(f"mcs_ordernumber eq '{n}' or mcs_referencenumber eq '{n}'")
+
+    # ---------- 写入（规则与 D365 表单 mcs_serviceorder.js / dispatchuser.html 一致） ----------
+    def _live(self, rid: str) -> dict:
+        """写入前重新读一次订单的实时状态，避免用过期数据做判断。"""
+        sel = "mcs_ordernumber,mcs_orderstatus,mcs_approvalstatus,_mcs_engineer_value,mcs_appointmenttime," \
+              "mcs_appointmenttimechangenumber"
+        return self.browser.fetch_json(self.base, self._api(f"{ENTITY_SET}({rid})?$select={sel}"))
+
+    def _action(self, name: str, params: dict) -> dict:
+        data = self.browser.fetch_json(self.base, self._api(name), method="POST", body=params)
+        res = data.get("Result")
+        if isinstance(res, str) and res.strip().startswith("{"):
+            res = json.loads(res)
+            if res.get("IsSuccess") is False:
+                raise RuntimeError(res.get("Message") or res.get("ErrorMessage") or f"{name} 执行失败")
+            return res
+        return data
+
+    def engineer_list(self, rid: str, keyword: str = "") -> list[dict]:
+        """D365 派工对话框用的工程师列表（Service_GetEngineerListApi，只读）。"""
+        res = self._action("Service_GetEngineerListApi", {"OrderId": rid, "FilterName": keyword, "AllowSelf": True})
+        return [{"id": e.get("id"), "name": " ".join(str(e.get("name") or "").replace("#", " ").split()),
+                 "jobcard": e.get("jobcard") or "", "network": e.get("Network") or "",
+                 "skill": e.get("personnelskill") or ""} for e in res.get("EngineerData") or []]
+
+    def assign_engineer(self, rid: str, person_id: str) -> str:
+        """已创建 → 派工（Service_DispatchEngineerApi）；已派工/已接收 → 转派（Service_TransferEngineerApi）。"""
+        cur = self._live(rid)
+        code, no = cur.get("mcs_orderstatus"), cur.get("mcs_ordernumber")
+        if cur.get("mcs_approvalstatus") in (20, 81, 90, 110, 130):
+            raise RuntimeError(f"{no} 正在审批中，D365 不允许转派")
+        if code == 10:
+            action, verb = "Service_DispatchEngineerApi", "派工"
+        elif code in (20, 70):
+            if (cur.get("_mcs_engineer_value") or "").lower() == person_id.lower():
+                raise RuntimeError(f"{no} 已经派给这位工程师了")
+            action, verb = "Service_TransferEngineerApi", "转派"
+        else:
+            raise RuntimeError(f"{no} 当前状态为「{cur.get('mcs_orderstatus' + FV)}」，D365 只允许在已创建/已派工/已接收时派工或转派")
+        self._action(action, {"DispatchParame": json.dumps({"personid": person_id, "orderid": rid})})
+        return verb
+
+    def set_appointment(self, rid: str, local_dt: datetime) -> None:
+        """改预约上门时间：D365 表单只允许「已创建」状态修改（CC 角色除外），并累加修改次数。"""
+        cur = self._live(rid)
+        if cur.get("mcs_orderstatus") != 10:
+            raise RuntimeError(f"{cur.get('mcs_ordernumber')} 当前状态为「{cur.get('mcs_orderstatus' + FV)}」，"
+                               "D365 只允许在「已创建」时修改预约上门时间，请在 D365 里由 CC 修改")
+        body = {"mcs_appointmenttime": local_dt.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")}
+        if cur.get("mcs_appointmenttime"):
+            body["mcs_appointmenttimechangenumber"] = int(cur.get("mcs_appointmenttimechangenumber") or 0) + 1
+        self.browser.fetch_json(self.base, self._api(f"{ENTITY_SET}({rid})"), method="PATCH", body=body,
+                                headers={"If-Match": "*"})
 
 
 def normalize(rec: dict) -> dict:

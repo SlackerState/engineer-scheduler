@@ -40,6 +40,7 @@ DEFAULT_SETTINGS = {
     "order_sources": "60",          # mcs_ordersource：60 = Udesk，多个用逗号
     "network_filter": "UK Kent 01 S",  # 服务网点，留空 = 不过滤
     "lookback_days": 30,
+    "udesk_url": "https://sany.s5.udesk.cn/entry/",
     "d365_status_overrides_local": True,
     "d365_to_dispatch": True,
     # 同步

@@ -78,10 +78,13 @@ async function loadOrders() {
   const rows = await safe(() => api('list_orders', $('#o-status').value, $('#o-kw').value.trim(), $('#o-eng').value));
   if (!rows) return;
   const t = $('#o-table');
+  S.selected = new Set();
+  updateBatch();
   if (!rows.length) { t.innerHTML = '<tr><td class="empty">没有订单。点左下「同步 D365」拉取 Udesk 创建的订单。</td></tr>'; return; }
-  t.innerHTML = `<thead><tr><th>日期</th><th>Udesk 工单号</th><th>服务订单号</th><th>客户</th><th>机器序列号</th>
+  t.innerHTML = `<thead><tr><th class="ck"><input type="checkbox" id="o-all" title="全选可改派的订单"></th><th>日期</th><th>Udesk 工单号</th><th>服务订单号</th><th>客户</th><th>机器序列号</th>
     <th>问题</th><th>工程师</th><th>状态</th><th>D365 状态</th><th>预约上门</th><th>处理进度</th></tr></thead><tbody>` +
     rows.map(o => `<tr class="click" data-id="${o.id}">
+      <td class="ck">${ASSIGNABLE.includes(o.d365_status_code) ? `<input type="checkbox" data-ck="${o.id}">` : ''}</td>
       <td class="nowrap">${esc(o.day)}</td><td class="nowrap mono">${esc(o.udesk_no)}</td>
       <td class="nowrap mono">${esc(o.service_order_no)}${o.order_type ? `<span class="tag">${esc(o.order_type)}</span>` : ''}</td>
       <td>${esc(o.customer)}</td><td class="mono">${esc(o.serial)}${o.model ? `<div class="muted small">${esc(o.model)}</div>` : ''}</td>
@@ -98,23 +101,93 @@ const D365_INFO = [
   ['warranty', '保修状态'], ['synced_at', '最后同步'],
 ];
 
+// D365 允许派工/转派的订单状态：已创建(10) → 派工；已派工(20)、已接收(70) → 转派
+const ASSIGNABLE = [10, 20, 70];
+
+function d365ActionsHtml(o) {
+  const code = o.d365_status_code;
+  const canAssign = ASSIGNABLE.includes(code), canAppt = code === 10;
+  return `<div class="card act">
+    <div class="row"><b>D365 操作</b><span class="muted small">直接修改 D365</span>
+      <span class="badge b-${esc(o.status)}" style="margin-left:auto">${esc(o.d365_status || '—')}</span></div>
+    <div class="row"><span class="lbl">工程师</span><b>${esc(o.engineer) || '<span class="muted">未派工</span>'}</b>
+      ${canAssign ? `<button class="primary" id="od-assign" style="margin-left:auto">${code === 10 ? '派工' : '改派工程师'}</button>`
+        : '<span class="muted small" style="margin-left:auto">当前状态 D365 不允许派工/改派</span>'}</div>
+    <div class="row"><span class="lbl">预约上门</span>
+      <input type="datetime-local" id="od-appt" value="${esc((o.appointment || '').replace(' ', 'T'))}" ${canAppt ? '' : 'disabled'}>
+      ${canAppt ? '<button id="od-appt-save" style="margin-left:auto">保存到 D365</button>'
+        : '<span class="muted small" style="margin-left:auto">D365 只允许「已创建」时改约，之后需 CC 在 D365 里改</span>'}</div>
+  </div>`;
+}
+
+function showResults(results) {
+  const bad = results.filter(r => !r.ok);
+  if (!bad.length) { toast(results.length > 1 ? `${results.length} 单全部完成` : results[0].message); return; }
+  modal(`<h2>部分订单没有成功</h2><table class="grid compact"><thead><tr><th>订单</th><th>结果</th></tr></thead><tbody>` +
+    results.map(r => `<tr><td class="mono">${esc(r.no)}</td><td class="${r.ok ? '' : 'conflict'}">${esc(r.message)}</td></tr>`).join('') +
+    `</tbody></table><div class="actions"><button class="primary" data-close>知道了</button></div>`,
+    (box, close) => ($('[data-close]', box).onclick = close));
+}
+
+function assignDialog(oids, after) {
+  modal(`<h2>${oids.length > 1 ? `批量改派 ${oids.length} 单` : '派工 / 改派工程师'}</h2>
+    <p class="muted small" style="margin:0">工程师名单来自 D365 的派工对话框，人员表里的人排在最前面。确认后调用 D365 官方的派工/转派接口，和在 D365 里点按钮的效果相同，工程师会收到派工通知。</p>
+    <div class="row"><input id="ae-kw" placeholder="搜索姓名" style="flex:1"><button id="ae-go">搜索</button></div>
+    <div id="ae-list" class="table-wrap" style="max-height:52vh;min-height:80px"></div>
+    <div class="actions"><button data-close>取消</button></div>`, (box, close) => {
+    $('[data-close]', box).onclick = close;
+    const load = async () => {
+      $('#ae-list', box).innerHTML = '<div class="empty">正在从 D365 读取工程师名单…</div>';
+      const rows = await safe(() => api('d365_engineers', oids[0], $('#ae-kw', box).value.trim()));
+      if (!rows) { $('#ae-list', box).innerHTML = ''; return; }
+      $('#ae-list', box).innerHTML = rows.length ? `<table class="grid compact"><thead><tr><th>工程师</th><th>工号</th><th>网点</th><th></th></tr></thead><tbody>` +
+        rows.map(r => `<tr><td><b>${esc(r.name)}</b>${r.local ? `<span class="tag">人员表：${esc(r.local)}</span>` : ''}</td>
+          <td class="mono">${esc(r.jobcard)}</td><td>${esc(r.network)}</td>
+          <td><button class="link" data-pick="${esc(r.id)}" data-name="${esc(r.name)}">选择</button></td></tr>`).join('') + '</tbody></table>'
+        : '<div class="empty">没有找到工程师</div>';
+    };
+    $('#ae-go', box).onclick = load;
+    $('#ae-kw', box).onkeydown = e => { if (e.key === 'Enter') load(); };
+    $('#ae-list', box).onclick = async e => {
+      const b = e.target.closest('[data-pick]'); if (!b) return;
+      close();
+      const what = oids.length > 1 ? `这 ${oids.length} 单` : '这单';
+      if (!await ask(`在 D365 中把${what}派给 / 转派给 ${b.dataset.name}？\n\n这会直接修改 D365，工程师会收到派工通知。`, '确认派工')) return;
+      toast('正在写入 D365…');
+      const res = await safe(() => api('d365_assign', oids, b.dataset.pick, b.dataset.name));
+      if (res) { showResults(res); after && after(); }
+    };
+    load();
+  });
+}
+
+function updateBatch() {
+  const n = S.selected ? S.selected.size : 0;
+  $('#o-batch').hidden = !n;
+  $('#o-batch').textContent = `批量改派（${n}）`;
+}
+
 async function openOrder(id) {
   const o = id ? await safe(() => api('get_order', id)) : {status: '待处理', day: S.boot.today};
   if (!o) return;
   const d = $('#drawer');
+  const fromD365 = !!o.d365_id;
+  const lockStatus = fromD365 && S.boot.settings.d365_status_overrides_local;
   const st = S.boot.order_statuses.map(s => `<option ${s === o.status ? 'selected' : ''}>${s}</option>`).join('');
   d.innerHTML = `
     <h2>${o.id ? '订单 ' + esc(o.service_order_no || o.udesk_no || '#' + o.id) : '手工新增订单'}
       ${o.d365_link ? '<button class="link" id="od-open">在 D365 打开 ↗</button>' : ''}
       <button class="x" id="od-close">关闭</button></h2>
+    ${fromD365 ? d365ActionsHtml(o) : ''}
+    <div class="sec">${fromD365 ? '本地记录 <span class="muted small">（只保存在软件里，不写回 D365）</span>' : '订单信息'}</div>
     <form class="form" id="od-form" style="display:grid;gap:10px">
       <div class="two"><label>日期<input name="day" type="date" value="${esc(o.day)}"></label>
-        <label>状态<select name="status">${st}</select></label></div>
+        <label>状态<select name="status" ${lockStatus ? 'disabled title="由 D365 同步"' : ''}>${st}</select></label></div>
       <div class="two"><label>服务订单号<input name="service_order_no" value="${esc(o.service_order_no)}"></label>
         <label>借料单号<input name="loan_no" value="${esc(o.loan_no)}"></label></div>
       <div class="two"><label>客户<input name="customer" value="${esc(o.customer)}"></label>
         <label>机器序列号<input name="serial" value="${esc(o.serial)}"></label></div>
-      <label>工程师<input name="engineer" value="${esc(o.engineer)}"></label>
+      <label>工程师<input name="engineer" value="${esc(o.engineer)}" ${fromD365 ? 'disabled title="由 D365 同步，改派请用上方「改派工程师」"' : ''}></label>
       <label>问题<textarea name="problem" rows="3">${esc(o.problem)}</textarea></label>
       <label>处理进度<textarea name="progress" rows="3">${esc(o.progress)}</textarea></label>
       <div class="row"><button class="primary" type="submit">保存</button>
@@ -125,6 +198,15 @@ async function openOrder(id) {
   d.hidden = false;
   $('#od-close').onclick = () => (d.hidden = true);
   if ($('#od-open')) $('#od-open').onclick = () => api('open_url', o.d365_link);
+  const reopen = () => { loadOrders(); openOrder(o.id); };
+  if ($('#od-assign')) $('#od-assign').onclick = () => assignDialog([o.id], reopen);
+  if ($('#od-appt-save')) $('#od-appt-save').onclick = async () => {
+    const v = $('#od-appt').value;
+    if (!v) { toast('请先选择预约上门时间', true); return; }
+    if (!await ask(`把 D365 订单 ${o.service_order_no} 的预约上门时间改为 ${v.replace('T', ' ')}？`, '保存到 D365')) return;
+    const r = await safe(() => api('d365_set_appointment', o.id, v));
+    if (r) { toast('预约时间已写入 D365，派单和排班已同步'); reopen(); }
+  };
   $('#od-form').onsubmit = e => {
     e.preventDefault();
     const data = Object.fromEntries(new FormData(e.target));
@@ -377,7 +459,17 @@ async function init() {
   $('#o-status').onchange = loadOrders;
   $('#o-eng').onchange = loadOrders;
   let kwTimer; $('#o-kw').oninput = () => { clearTimeout(kwTimer); kwTimer = setTimeout(loadOrders, 250); };
-  $('#o-table').onclick = e => { const tr = e.target.closest('tr[data-id]'); if (tr) openOrder(+tr.dataset.id); };
+  $('#o-table').onclick = e => {
+    if (e.target.id === 'o-all') {
+      $$('[data-ck]').forEach(c => { c.checked = e.target.checked; S.selected[c.checked ? 'add' : 'delete'](+c.dataset.ck); });
+      updateBatch(); return;
+    }
+    if (e.target.dataset.ck) { S.selected[e.target.checked ? 'add' : 'delete'](+e.target.dataset.ck); updateBatch(); return; }
+    if (e.target.closest('td.ck')) return;
+    const tr = e.target.closest('tr[data-id]'); if (tr) openOrder(+tr.dataset.id);
+  };
+  $('#o-batch').onclick = () => assignDialog([...S.selected], loadOrders);
+  $('#o-udesk').onclick = () => api('open_udesk');
   $('#o-find').onclick = findD365;
   $('#o-new').onclick = () => openOrder(null);
 

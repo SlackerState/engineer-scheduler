@@ -25,6 +25,7 @@ jobs:
             artifact: EngineerScheduler-macos-arm64
             sep: ":"
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 40
     env:
       APP_NAME: 工程师排班管理
       PYTHONUTF8: "1"
@@ -50,6 +51,7 @@ jobs:
 
       - name: 冒烟测试（网页模式启动打包后的程序）
         shell: bash
+        timeout-minutes: 5
         run: |
           if [ "$RUNNER_OS" = "Windows" ]; then
             BIN="dist/$APP_NAME/$APP_NAME.exe"
@@ -57,15 +59,26 @@ jobs:
             BIN="dist/$APP_NAME.app/Contents/MacOS/$APP_NAME"
           fi
           export ES_DATA_DIR="$RUNNER_TEMP/es-data"
-          "$BIN" --web --port 8765 &
-          for i in $(seq 1 30); do
-            curl -sf -X POST http://127.0.0.1:8765/api/bootstrap -d '[]' > boot.json && break
+          # 输出重定向到文件，避免后台进程占住步骤的输出管道
+          "$BIN" --web --port 8765 > smoke.log 2>&1 &
+          PID=$!
+          stop() {
+            if [ "$RUNNER_OS" = "Windows" ]; then
+              taskkill //F //T //IM "$APP_NAME.exe" > /dev/null 2>&1 || true
+            else
+              kill "$PID" 2>/dev/null || true
+            fi
+          }
+          trap stop EXIT
+          ok=""
+          for i in $(seq 1 45); do
+            if curl -sf -X POST http://127.0.0.1:8765/api/bootstrap -d '[]' > boot.json; then ok=1; break; fi
             sleep 2
           done
+          if [ -z "$ok" ]; then echo "程序没有启动"; cat smoke.log || true; exit 1; fi
           grep -q '"ok": true' boot.json
           curl -sf http://127.0.0.1:8765/ | grep -q 'es-mode'
           echo "打包后的程序启动正常"
-          kill %1 || true
 
       - name: 压缩（Mac）
         if: runner.os == 'macOS'

@@ -7,6 +7,7 @@
   font-size: 13px; color: var(--ink);
 }
 * { box-sizing: border-box; }
+[hidden] { display: none !important; }
 body { margin: 0; display: flex; height: 100vh; background: var(--bg); overflow: hidden; }
 button, input, select, textarea { font: inherit; color: inherit; }
 button, .btn {
@@ -70,6 +71,10 @@ table.grid { border-collapse: collapse; width: 100%; }
 .b-处理中 { background: #fff4e0; color: var(--warn); }
 .b-已完成 { background: #e6f4ea; color: var(--good); }
 .b-已取消 { background: #eee; color: #777; }
+.grid th.ck, .grid td.ck { width: 30px; text-align: center; padding-left: 4px; padding-right: 4px; }
+.card.act { background: #f6f9ff; border-color: #cfdcf3; }
+.card.act .lbl { color: var(--muted); width: 64px; flex: none; }
+.form select:disabled, .form input:disabled { background: #f3f4f6; color: var(--muted); }
 .tag { font-size: 11px; color: var(--muted); border: 1px solid var(--line); border-radius: 4px; padding: 0 4px; margin-left: 4px; }
 
 /* 排班表 */

@@ -26,8 +26,10 @@ ACCEPT_HEADERS = {
 }
 
 FETCH_JS = """
-async ([url, headers]) => {
-  const r = await fetch(url, {headers, credentials: 'include'});
+async ([url, headers, method, body]) => {
+  const opt = {headers, credentials: 'include', method: method || 'GET'};
+  if (body !== null && body !== undefined) opt.body = body;
+  const r = await fetch(url, opt);
   return {status: r.status, ct: r.headers.get('content-type') || '', text: await r.text()};
 }
 """
@@ -188,7 +190,8 @@ class Browser:
             raise NeedLogin("D365 未登录或登录已过期") from e
         return page
 
-    def fetch_json(self, base: str, url: str) -> dict:
+    def fetch_json(self, base: str, url: str, method: str = "GET", body: dict | None = None,
+                   headers: dict | None = None) -> dict:
         """在 D365 页面上下文里 fetch，Cookie 认证与正常打开 D365 完全一样。"""
         def fn():
             s = self.get_settings()
@@ -196,11 +199,18 @@ class Browser:
             page = self._api_page
             if page is None or page.is_closed() or urlparse(page.url).netloc != urlparse(base).netloc:
                 page = self._api_page = self._open_api_page(ctx, base)
-            r = page.evaluate(FETCH_JS, [url, ACCEPT_HEADERS])
-            if r["status"] in (401, 403) or "json" not in r["ct"]:
+            hdr = dict(ACCEPT_HEADERS, **(headers or {}))
+            payload = None
+            if body is not None:
+                hdr["Content-Type"] = "application/json; charset=utf-8"
+                payload = json.dumps(body, ensure_ascii=False)
+            r = page.evaluate(FETCH_JS, [url, hdr, method, payload])
+            if r["status"] == 204:  # PATCH / 无返回值的动作
+                return {}
+            if r["status"] == 401 or (r["status"] < 400 and "json" not in r["ct"]):
                 self._api_page = None
                 raise NeedLogin(f"D365 拒绝访问（HTTP {r['status']}），请重新登录")
-            data = json.loads(r["text"] or "{}")
+            data = json.loads(r["text"] or "{}") if "json" in r["ct"] else {"error": {"message": r["text"][:300]}}
             if r["status"] >= 400:
                 msg = (data.get("error") or {}).get("message") or r["text"][:300]
                 raise RuntimeError(f"D365 返回错误 {r['status']}：{msg}")

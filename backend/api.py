@@ -156,6 +156,58 @@ class Api:
                 self._sync.sync_dispatch(row, engineers)
         return len(recs)
 
+    # ---------- 写回 D365 ----------
+    def _d365_order(self, oid) -> dict:
+        o = self._db.one("SELECT id, d365_id, service_order_no FROM orders WHERE id=?", (int(oid),))
+        if not o or not o["d365_id"]:
+            raise ValueError("这条订单不是从 D365 同步来的，无法写回 D365")
+        return o
+
+    def _refresh_from_d365(self, d365_ids: list[str]):
+        """写入后立即从 D365 读回最新数据，并同步派单记录和排班表。"""
+        s, engineers = self._db.settings(), self._db.engineers()
+        for rec in self._d365.by_ids(d365_ids):
+            row = normalize(rec)
+            self._sync.upsert(row, s)
+            if s.get("d365_to_dispatch", True):
+                self._sync.sync_dispatch(row, engineers)
+
+    def d365_engineers(self, oid, keyword=""):
+        o = self._d365_order(oid)
+        rows = self._d365.engineer_list(o["d365_id"], keyword or "")
+        engineers = self._db.engineers()
+        for r in rows:  # 人员表里的人排在前面，并标出本地姓名
+            r["local"] = (logic.match_engineer(engineers, r["name"]) or {}).get("name", "")
+        rows.sort(key=lambda r: (not r["local"], r["name"].lower()))
+        return rows
+
+    def d365_assign(self, oids, person_id, person_name=""):
+        """把一单或多单派给 / 转派给 D365 里的某位工程师，逐单返回结果。"""
+        results, done = [], []
+        for oid in oids if isinstance(oids, list) else [oids]:
+            o = self._d365_order(oid)
+            try:
+                verb = self._d365.assign_engineer(o["d365_id"], person_id)
+                results.append({"id": o["id"], "no": o["service_order_no"], "ok": True, "message": f"已{verb}给 {person_name}"})
+                done.append(o["d365_id"])
+            except NeedLogin:
+                raise
+            except Exception as e:  # noqa: BLE001 - 单张失败不影响其它
+                results.append({"id": o["id"], "no": o["service_order_no"], "ok": False, "message": str(e)})
+        if done:
+            self._refresh_from_d365(done)
+        return results
+
+    def d365_set_appointment(self, oid, value):
+        """value 形如 '2026-10-28T09:30'（本机时间）。"""
+        o = self._d365_order(oid)
+        self._d365.set_appointment(o["d365_id"], datetime.fromisoformat(value).astimezone())
+        self._refresh_from_d365([o["d365_id"]])
+        return self.get_order(oid)
+
+    def open_udesk(self):
+        webbrowser.open(self._db.settings().get("udesk_url") or "https://sany.s5.udesk.cn/entry/")
+
     def start_sync(self):
         return self._sync.start()
 
