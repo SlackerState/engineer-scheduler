@@ -49,36 +49,52 @@ jobs:
           --collect-all playwright --collect-all webview
           main.py
 
-      - name: 冒烟测试（网页模式启动打包后的程序）
+      - name: 冒烟测试（Mac：网页模式启动打包后的程序）
+        if: runner.os == 'macOS'
         shell: bash
         timeout-minutes: 5
         run: |
-          if [ "$RUNNER_OS" = "Windows" ]; then
-            BIN="dist/$APP_NAME/$APP_NAME.exe"
-          else
-            BIN="dist/$APP_NAME.app/Contents/MacOS/$APP_NAME"
-          fi
           export ES_DATA_DIR="$RUNNER_TEMP/es-data"
-          # 输出重定向到文件，避免后台进程占住步骤的输出管道
-          "$BIN" --web --port 8765 > smoke.log 2>&1 &
+          "dist/$APP_NAME.app/Contents/MacOS/$APP_NAME" --web --port 8765 > smoke.log 2>&1 &
           PID=$!
-          stop() {
-            if [ "$RUNNER_OS" = "Windows" ]; then
-              taskkill //F //T //IM "$APP_NAME.exe" > /dev/null 2>&1 || true
-            else
-              kill "$PID" 2>/dev/null || true
-            fi
-          }
-          trap stop EXIT
+          trap 'kill "$PID" 2>/dev/null || true' EXIT
           ok=""
           for i in $(seq 1 45); do
-            if curl -sf -X POST http://127.0.0.1:8765/api/bootstrap -d '[]' > boot.json; then ok=1; break; fi
+            if curl -sf --max-time 5 -X POST http://127.0.0.1:8765/api/bootstrap -d '[]' > boot.json; then ok=1; break; fi
             sleep 2
           done
           if [ -z "$ok" ]; then echo "程序没有启动"; cat smoke.log || true; exit 1; fi
           grep -q '"ok": true' boot.json
-          curl -sf http://127.0.0.1:8765/ | grep -q 'es-mode'
+          curl -sf --max-time 5 http://127.0.0.1:8765/ | grep -q 'es-mode'
           echo "打包后的程序启动正常"
+
+      - name: 冒烟测试（Windows：网页模式启动打包后的程序）
+        if: runner.os == 'Windows'
+        shell: pwsh
+        timeout-minutes: 5
+        run: |
+          $env:ES_DATA_DIR = Join-Path $env:RUNNER_TEMP "es-data"
+          $exe = Join-Path (Get-Location) "dist\$env:APP_NAME\$env:APP_NAME.exe"
+          $p = Start-Process -FilePath $exe -ArgumentList "--web", "--port", "8765" -PassThru `
+               -RedirectStandardOutput smoke.out -RedirectStandardError smoke.err
+          $ok = $false
+          for ($i = 0; $i -lt 45; $i++) {
+            if ($p.HasExited) { break }
+            try {
+              $r = Invoke-RestMethod -Method Post -Uri "http://127.0.0.1:8765/api/bootstrap" -Body "[]" -TimeoutSec 5
+              if ($r.ok) { $ok = $true; break }
+            } catch { Start-Sleep -Seconds 2 }
+          }
+          if (-not $ok) {
+            Write-Host "程序没有启动"; if ($p.HasExited) { Write-Host "退出码：$($p.ExitCode)" }
+            Get-Content smoke.out, smoke.err -ErrorAction SilentlyContinue
+            Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue
+            exit 1
+          }
+          $html = Invoke-WebRequest -Uri "http://127.0.0.1:8765/" -TimeoutSec 5 -UseBasicParsing
+          Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue
+          if ($html.Content -notmatch "es-mode") { Write-Host "页面内容不对"; exit 1 }
+          Write-Host "打包后的程序启动正常"
 
       - name: 压缩（Mac）
         if: runner.os == 'macOS'

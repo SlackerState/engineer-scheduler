@@ -52,7 +52,10 @@ def serve(api: Api, ui_dir: Path, host: str = "127.0.0.1", port: int = 8765):
             self._send(200, json.dumps(body, ensure_ascii=False).encode(), "application/json; charset=utf-8")
 
     httpd = ThreadingHTTPServer((host, port), Handler)
-    print(f"网页模式已启动：http://{host}:{port}")
+    try:  # 打包后的 Windows 程序没有控制台，或控制台编码不支持中文
+        print(f"网页模式已启动：http://{host}:{port}", flush=True)
+    except Exception:
+        pass
     try:
         httpd.serve_forever()
     finally:
