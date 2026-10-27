@@ -108,6 +108,7 @@ td.click u { text-decoration-color: #b8c3d6; }
 a.lnk { color: var(--accent); cursor: pointer; text-decoration: none; }
 a.lnk:hover { text-decoration: underline; }
 .card.act.parts { background: #fbfaf6; border-color: #ece4cf; }
+.parts-tb input.cq { width: 58px; padding: 2px 4px; }
 .sec.small { font-size: 12px; margin-top: 2px; padding-top: 6px; }
 .tag { font-size: 11px; color: var(--muted); border: 1px solid var(--line); border-radius: 4px; padding: 0 4px; margin-left: 4px; }
 

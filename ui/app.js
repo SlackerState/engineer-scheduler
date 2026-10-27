@@ -223,6 +223,7 @@ async function openOrder(id) {
   d.hidden = false;
   $('#od-close').onclick = () => (d.hidden = true);
   if ($('#od-open')) $('#od-open').onclick = () => api('open_url', o.d365_link);
+  S.curOrder = o;
   if (fromD365) loadOrderParts(o.id);
   const reopen = () => { refreshView(); openOrder(o.id); };
   if ($('#od-plan-save')) $('#od-plan-save').onclick = () => safe(async () => {
@@ -439,6 +440,8 @@ function jobHtml(j) {
 }
 
 // ======================= 配件（只读，来自 D365） =======================
+// 这些工单状态下 D365 不允许再改配件消耗：已取消、提交审批、服务完工、远程完工、异常完工
+const CONSUMPTION_LOCKED = [15, 105, 110, 130, 140];
 const BORROW_STATES = ['需处理', '待归还', '归还被拒', '审批通过待退', '归还审批中', '借用中', '已用完', '已归还', ''];
 const stateBadge = s => `<span class="badge bs-${esc(s)}">${esc(s)}</span>`;
 const money = (v, cur) => `${esc(cur || '')}${Number(v || 0).toFixed(2)}`;
@@ -505,19 +508,46 @@ async function loadOrderParts(oid, refresh) {
   const r = await safe(() => api(refresh ? 'refresh_order_parts' : 'order_parts', oid));
   if (!r) { box.innerHTML = ''; return; }
   const charged = r.parts.filter(p => p.is_charge);
+  const orderLock = CONSUMPTION_LOCKED.includes((S.curOrder || {}).d365_status_code)
+    ? `工单状态为「${(S.curOrder || {}).d365_status}」，不能改消耗` : '';
+  const lockOf = p => p.writeoff_doc ? `已核销（${p.writeoff_doc}）` : p.return_order ? `已在归还单 ${p.return_order} 上` : orderLock;
   box.innerHTML = `
     <div class="row"><span class="muted small">共 ${r.parts.length} 个配件 · 收费 ${charged.length} 个，合计 <b>${money(r.charge_total, r.currency)}</b></span>
       <button class="link" id="od-parts-refresh" style="margin-left:auto">从 D365 刷新</button></div>
-    ${r.parts.length ? `<table class="grid compact"><thead><tr><th>配件</th><th>数量</th><th>剩余</th><th>收费</th><th>金额</th><th>借料单</th></tr></thead><tbody>` +
-      r.parts.map(p => `<tr><td><span class="mono small">${esc(p.part_no)}</span><div>${esc(p.name)}</div></td><td>${qty(p.quantity)}</td>
+    ${r.parts.length ? `<table class="grid compact parts-tb"><thead><tr><th>配件</th><th title="确认数量">确认</th><th>消耗</th><th>剩余</th><th>收费</th><th>金额</th><th>借料单</th></tr></thead><tbody>` +
+      r.parts.map(p => { const lock = lockOf(p); return `<tr data-part="${esc(p.id)}">
+        <td><span class="mono small">${esc(p.part_no)}</span><div>${esc(p.name)}</div></td><td>${qty(p.confirm_qty)}</td>
+        <td class="nowrap">${lock ? `${qty(p.consumption_qty)} <span class="muted small" title="${esc(lock)}">🔒</span>`
+          : `<input type="number" class="cq" min="0" max="${p.confirm_qty}" step="1" value="${qty(p.consumption_qty)}" data-old="${p.consumption_qty}">
+             <button class="link" data-save-cq hidden>保存</button>`}</td>
         <td class="${p.remaining_qty > 0 ? 'warn' : ''}">${qty(p.remaining_qty)}</td>
         <td>${p.is_charge ? '<span class="badge b-处理中">收费</span>' : '<span class="muted">否</span>'}</td>
-        <td class="nowrap">${esc(p.total_text)}</td><td class="mono small">${esc(p.material_code)}</td></tr>`).join('') + '</tbody></table>'
+        <td class="nowrap">${esc(p.total_text)}</td><td class="mono small">${esc(p.material_code)}</td></tr>`; }).join('') + '</tbody></table>' +
+      '<div class="muted small">改「消耗」后点保存，直接写入 D365；剩余数量 = 确认 − 消耗，由 D365 重新计算。</div>'
       : '<div class="muted small">这单没有配件（或还没同步）</div>'}
     ${r.borrows.length ? '<div class="sec small">借料归还</div>' + r.borrows.map(b => `<div class="row">${stateBadge(b.state)}
       <a class="lnk mono" data-open="${esc((r.materials.find(m => m.id === b.id) || {}).d365_link || '')}">${esc(b.code)} ↗</a>
       <span class="muted small">剩余 ${qty(b.remaining)} 件 · ${esc(b.return_status || '')}${b.returns.length ? ' · 归还单 ' + b.returns.map(x => esc(x.code) + '（' + esc(x.status) + '）').join('、') : ''}</span></div>`).join('') : ''}`;
   $('#od-parts-refresh').onclick = () => loadOrderParts(oid, true);
+  // 改消耗：数值变了才显示「保存」；确认后写回 D365
+  box.oninput = e => {
+    if (!e.target.matches('input.cq')) return;
+    const btn = e.target.parentElement.querySelector('[data-save-cq]');
+    btn.hidden = Number(e.target.value) === Number(e.target.dataset.old);
+  };
+  box.onclick = async e => {
+    if (!e.target.matches('[data-save-cq]')) return;
+    const tr = e.target.closest('tr[data-part]'), inp = $('input.cq', tr);
+    const v = Number(inp.value), max = Number(inp.max), old = Number(inp.dataset.old);
+    if (!(v >= 0 && v <= max)) { toast(`消耗只能在 0 到确认数量 ${max} 之间`, true); return; }
+    const name = $('td div', tr).textContent;
+    if (!await ask(`把「${name}」的消耗数量从 ${old} 改为 ${v}？\n剩余数量会变为 ${max - v}，直接写入 D365。`, '写入 D365')) return;
+    const res = await safe(() => api('set_part_consumption', oid, tr.dataset.part, v));
+    if (!res) return;
+    toast(`已写入 D365：${res.changed.name} 消耗 ${res.changed.old} → ${res.changed.new}，剩余 ${res.changed.remaining ?? '—'}`);
+    loadOrderParts(oid);
+    if (S.view === 'parts') loadParts();
+  };
   $$('[data-open]', box).forEach(a => (a.onclick = () => a.dataset.open && api('open_url', a.dataset.open)));
 }
 

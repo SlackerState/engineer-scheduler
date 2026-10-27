@@ -132,6 +132,9 @@ CREATE TABLE IF NOT EXISTS parts (
     quantity REAL DEFAULT 0,
     confirm_qty REAL DEFAULT 0,
     remaining_qty REAL DEFAULT 0,
+    consumption_qty REAL DEFAULT 0,
+    writeoff_doc TEXT DEFAULT '',   -- 已在配件核销单上（非空 = 已核销，不能再改消耗）
+    return_order TEXT DEFAULT '',   -- 已在归还单上
     is_charge INTEGER DEFAULT 0,
     price REAL DEFAULT 0,
     discount REAL DEFAULT 0,
@@ -192,6 +195,11 @@ class DB:
             for name in ("planned_day", "planned_slot"):
                 if name not in cols:
                     self.conn.execute(f"ALTER TABLE orders ADD COLUMN {name} TEXT DEFAULT ''")
+            cols = {r[1] for r in self.conn.execute("PRAGMA table_info(parts)")}
+            for name, ddl in (("consumption_qty", "REAL DEFAULT 0"), ("writeoff_doc", "TEXT DEFAULT ''"),
+                              ("return_order", "TEXT DEFAULT ''")):
+                if name not in cols:
+                    self.conn.execute(f"ALTER TABLE parts ADD COLUMN {name} {ddl}")
             cols = {r[1] for r in self.conn.execute("PRAGMA table_info(schedule)")}
             if "auto" not in cols:
                 self.conn.execute("ALTER TABLE schedule ADD COLUMN auto INTEGER NOT NULL DEFAULT 0")

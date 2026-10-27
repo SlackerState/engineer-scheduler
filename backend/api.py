@@ -212,6 +212,17 @@ class Api:
         self._mat_link(res["materials"])
         return res
 
+    def set_part_consumption(self, oid, part_id, qty):
+        """把配件消耗数量写回 D365，然后重新读取这一单的配件（剩余数量由 D365 重算）。"""
+        try:
+            r = self._d365.set_consumption(part_id, float(qty))
+        except NeedLogin as e:
+            raise RuntimeError(f"{e}，请先点「同步 D365」登录") from e
+        self._sync.sync_parts([r["order_d365_id"]])
+        p = self._db.one("SELECT remaining_qty FROM parts WHERE id=?", (part_id,))
+        r["remaining"] = p["remaining_qty"] if p else None
+        return {**self.order_parts(oid), "changed": r}
+
     def refresh_order_parts(self, oid):
         """从 D365 重新读取这一单的配件和借料/归还单。"""
         o = self._d365_order(oid)

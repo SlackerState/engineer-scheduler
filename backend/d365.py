@@ -97,6 +97,29 @@ class D365:
     def parts_for(self, order_ids: list[str]) -> list[dict]:
         return [normalize_part(r) for r in self._by_orders("mcs_serviceparts", PART_SELECT, "_mcs_serviceorder_value", order_ids)]
 
+    def set_consumption(self, part_id: str, qty: float) -> dict:
+        """改服务配件的消耗数量。D365 的插件会据此重算剩余数量和金额（剩余 = 确认数量 − 消耗数量）。
+        规则同 D365 表单：0 ≤ 消耗 ≤ 确认数量；另外已核销 / 已在归还单上 / 工单已取消或已完工审批的不能改。"""
+        sel = ("mcs_partfullname,mcs_confirmquantity,mcs_consumptionquantity,mcs_remainingquantity,"
+               "_mcs_partswriteoffdocid_value,_mcs_retunorderid_value,_mcs_serviceorder_value")
+        p = self.browser.fetch_json(self.base, self._api(f"mcs_serviceparts({part_id})?$select={sel}"))
+        name = p.get("mcs_partfullname") or "配件"
+        confirm = float(p.get("mcs_confirmquantity") or 0)
+        if qty < 0 or qty > confirm:
+            raise RuntimeError(f"{name} 的消耗数量只能在 0 到确认数量 {confirm:g} 之间")
+        if p.get("_mcs_partswriteoffdocid_value"):
+            raise RuntimeError(f"{name} 已核销（{p.get('_mcs_partswriteoffdocid_value' + FV) or '核销单'}），不能再改消耗")
+        if p.get("_mcs_retunorderid_value"):
+            raise RuntimeError(f"{name} 已在归还单 {p.get('_mcs_retunorderid_value' + FV) or ''} 上，不能再改消耗")
+        so_id = p.get("_mcs_serviceorder_value")
+        so = self.browser.fetch_json(self.base, self._api(f"{ENTITY_SET}({so_id})?$select=mcs_orderstatus,mcs_ordernumber"))
+        if so.get("mcs_orderstatus") in CONSUMPTION_LOCKED:
+            raise RuntimeError(f"工单 {so.get('mcs_ordernumber')} 当前状态为「{so.get('mcs_orderstatus' + FV)}」，不能再改配件消耗")
+        old = float(p.get("mcs_consumptionquantity") or 0)
+        self.browser.fetch_json(self.base, self._api(f"mcs_serviceparts({part_id})"), method="PATCH",
+                                body={"mcs_consumptionquantity": qty}, headers={"If-Match": "*"})
+        return {"order_d365_id": so_id, "name": name, "old": old, "new": qty, "confirm": confirm}
+
     def materials_for(self, order_ids: list[str]) -> list[dict]:
         return [normalize_material(r) for r in
                 self._by_orders("mcs_repairmaterialorders", MATERIAL_SELECT, "_mcs_serviceorderid_value", order_ids)]
@@ -178,8 +201,9 @@ class D365:
 
 PART_SELECT = [
     "mcs_servicepartid", "_mcs_serviceorder_value", "_mcs_part_value", "mcs_partfullname", "mcs_quantity",
-    "mcs_confirmquantity", "mcs_remainingquantity", "mcs_ischarge", "mcs_price", "mcs_discount", "mcs_totalamount",
-    "_mcs_repairmaterialorderid_value", "createdon", "modifiedon",
+    "mcs_confirmquantity", "mcs_remainingquantity", "mcs_consumptionquantity", "mcs_ischarge", "mcs_price",
+    "mcs_discount", "mcs_totalamount", "_mcs_repairmaterialorderid_value", "_mcs_partswriteoffdocid_value",
+    "_mcs_retunorderid_value", "createdon", "modifiedon",
 ]
 MATERIAL_SELECT = [
     "mcs_repairmaterialorderid", "_mcs_serviceorderid_value", "mcs_code", "mcs_type", "mcs_orderstatus",
@@ -188,6 +212,8 @@ MATERIAL_SELECT = [
 ]
 # mcs_repairmaterialorder.mcs_type：10 向事业部领料 · 20 向子公司借料 · 30 归还单 · 40 向子公司领料 · 50 向寄售库领料
 MAT_BORROW, MAT_RETURN = 20, 30
+# 这些工单状态下不允许改配件消耗：已取消、提交审批、服务完工、远程完工、异常完工
+CONSUMPTION_LOCKED = {15, 105, 110, 130, 140}
 
 
 def _fv(rec: dict, k: str):
@@ -199,7 +225,10 @@ def normalize_part(r: dict) -> dict:
         "id": r["mcs_servicepartid"], "order_d365_id": r.get("_mcs_serviceorder_value") or "",
         "part_no": _fv(r, "_mcs_part_value"), "name": r.get("mcs_partfullname") or "",
         "quantity": r.get("mcs_quantity") or 0, "confirm_qty": r.get("mcs_confirmquantity") or 0,
-        "remaining_qty": r.get("mcs_remainingquantity") or 0, "is_charge": int(bool(r.get("mcs_ischarge"))),
+        "remaining_qty": r.get("mcs_remainingquantity") or 0, "consumption_qty": r.get("mcs_consumptionquantity") or 0,
+        "writeoff_doc": str(_fv(r, "_mcs_partswriteoffdocid_value") or ""),
+        "return_order": str(_fv(r, "_mcs_retunorderid_value") or ""),
+        "is_charge": int(bool(r.get("mcs_ischarge"))),
         "price": r.get("mcs_price") or 0, "discount": r.get("mcs_discount") or 0,
         "total": r.get("mcs_totalamount") or 0, "total_text": str(_fv(r, "mcs_totalamount")),
         "material_id": r.get("_mcs_repairmaterialorderid_value") or "",
