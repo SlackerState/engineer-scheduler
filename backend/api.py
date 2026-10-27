@@ -223,13 +223,20 @@ class Api:
         r["remaining"] = p["remaining_qty"] if p else None
         return {**self.order_parts(oid), "changed": r}
 
-    def refresh_order_parts(self, oid):
-        """从 D365 重新读取这一单的配件和借料/归还单。"""
+    def refresh_order_parts(self, oid, quiet=False):
+        """从 D365 重新读取这一单的配件和借料/归还单。quiet：打开详情时的自动刷新，失败就用本地数据。"""
         o = self._d365_order(oid)
         try:
             self._sync.sync_parts([o["d365_id"]])
-        except NeedLogin as e:
-            raise RuntimeError(f"{e}，请先点「同步 D365」登录") from e
+        except Exception as e:  # noqa: BLE001
+            if not quiet:
+                if isinstance(e, NeedLogin):
+                    raise RuntimeError(f"{e}，请先点「同步 D365」登录") from e
+                raise
+            res = self.order_parts(oid)
+            res["stale"] = ("没登录 D365" if isinstance(e, NeedLogin) else "没连上 D365") + "，显示的是上次同步的数据"
+            res["stale_detail"] = str(e).splitlines()[0][:200] if str(e) else ""
+            return res
         return self.order_parts(oid)
 
     def orders_since(self, day, status=""):

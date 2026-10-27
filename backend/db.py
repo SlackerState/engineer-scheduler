@@ -234,6 +234,13 @@ class DB:
             s["schedule_start"] = _monday(date.today()).isoformat()
         return s
 
+    def set_raw_setting(self, key: str, value):
+        """写内部记号（不在设置页里显示的键）。"""
+        with self.lock:
+            self.conn.execute("INSERT INTO settings(key, value) VALUES(?, ?) "
+                              "ON CONFLICT(key) DO UPDATE SET value = excluded.value", (key, json.dumps(value)))
+            self.conn.commit()
+
     def save_settings(self, data: dict) -> dict:
         with self.lock:
             for k, v in data.items():

@@ -224,7 +224,7 @@ async function openOrder(id) {
   $('#od-close').onclick = () => (d.hidden = true);
   if ($('#od-open')) $('#od-open').onclick = () => api('open_url', o.d365_link);
   S.curOrder = o;
-  if (fromD365) loadOrderParts(o.id);
+  if (fromD365) loadOrderParts(o.id).then(() => loadOrderParts(o.id, 'auto'));
   const reopen = () => { refreshView(); openOrder(o.id); };
   if ($('#od-plan-save')) $('#od-plan-save').onclick = () => safe(async () => {
     const day = $('#od-plan-day').value;
@@ -502,10 +502,22 @@ async function loadCharges() {
 }
 
 // 工单详情里的配件部分
+// refresh：true 手动从 D365 刷新；'auto' 打开详情后在后台读 D365 最新数据（失败不打扰，保留本地数据）
 async function loadOrderParts(oid, refresh) {
-  const box = $('#od-parts'); if (!box) return;
-  box.innerHTML = `<div class="muted small">${refresh ? '正在从 D365 读取…' : '读取中…'}</div>`;
-  const r = await safe(() => api(refresh ? 'refresh_order_parts' : 'order_parts', oid));
+  let box = $('#od-parts'); if (!box) return;
+  const auto = refresh === 'auto';
+  if (auto) {
+    const tip = $('#od-parts-sync'); if (tip) tip.textContent = '正在读取 D365 最新数据…';
+  } else box.innerHTML = `<div class="muted small">${refresh ? '正在从 D365 读取…' : '读取中…'}</div>`;
+  const r = auto ? await api('refresh_order_parts', oid, true).catch(() => null)
+    : await safe(() => api(refresh ? 'refresh_order_parts' : 'order_parts', oid));
+  box = $('#od-parts');
+  if (auto) {
+    // 详情已关闭/换了一单，或用户正在改消耗，就不覆盖
+    if (!box || (S.curOrder || {}).id !== oid || $$('[data-save-cq]:not([hidden])', box).length) return;
+    if (!r) { const tip = $('#od-parts-sync'); if (tip) tip.textContent = ''; return; }
+  }
+  if (!box) return;
   if (!r) { box.innerHTML = ''; return; }
   const charged = r.parts.filter(p => p.is_charge);
   const orderLock = CONSUMPTION_LOCKED.includes((S.curOrder || {}).d365_status_code)
@@ -513,6 +525,7 @@ async function loadOrderParts(oid, refresh) {
   const lockOf = p => p.writeoff_doc ? `已核销（${p.writeoff_doc}）` : p.return_order ? `已在归还单 ${p.return_order} 上` : orderLock;
   box.innerHTML = `
     <div class="row"><span class="muted small">共 ${r.parts.length} 个配件 · 收费 ${charged.length} 个，合计 <b>${money(r.charge_total, r.currency)}</b></span>
+      <span id="od-parts-sync" class="muted small ${r.stale ? 'warn' : ''}" title="${esc(r.stale_detail || '')}">${esc(r.stale || '')}</span>
       <button class="link" id="od-parts-refresh" style="margin-left:auto">从 D365 刷新</button></div>
     ${r.parts.length ? `<table class="grid compact parts-tb"><thead><tr><th>配件</th><th title="确认数量">确认</th><th>消耗</th><th>剩余</th><th>收费</th><th>金额</th><th>借料单</th></tr></thead><tbody>` +
       r.parts.map(p => { const lock = lockOf(p); return `<tr data-part="${esc(p.id)}">

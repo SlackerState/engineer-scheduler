@@ -16,6 +16,10 @@ D365_COLUMNS = ["udesk_no", "order_type", "d365_status", "d365_status_code", "ap
 FILL_IF_EMPTY = ["day", "service_order_no", "customer", "serial", "problem"]
 
 
+# 配件同步字段版本：改了 PART_SELECT 就加 1，下次同步会全量重拉配件
+PARTS_SYNC_V = 2
+
+
 class Syncer:
     def __init__(self, db: DB, d365: D365):
         self.db, self.d365 = db, d365
@@ -113,8 +117,17 @@ class Syncer:
         msg = f"同步完成：新增 {new} 单，更新 {upd} 单"
         if skipped:
             msg += f"，跳过其它网点 {skipped} 单"
+        # 配件新增了同步字段（如消耗数量）后，第一次同步把本地所有 D365 工单的配件都重拉一遍，
+        # 否则回看期外、已完结的老工单会一直停留在旧数据
+        full = int(s.get("parts_synced_v") or 0) < PARTS_SYNC_V
+        part_ids = synced_ids
+        if full:
+            part_ids = list(dict.fromkeys(synced_ids + [r["d365_id"] for r in self.db.q(
+                "SELECT d365_id FROM orders WHERE d365_id IS NOT NULL AND d365_id <> ''")]))
         try:
-            n_parts, n_mats = self.sync_parts(synced_ids)
+            n_parts, n_mats = self.sync_parts(part_ids)
+            if full:
+                self.db.set_raw_setting("parts_synced_v", PARTS_SYNC_V)
             msg += f"；配件 {n_parts} 条、借料/归还单 {n_mats} 张"
         except NeedLogin:
             raise
