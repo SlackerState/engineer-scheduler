@@ -1,6 +1,7 @@
 """在线更新：从 GitHub Releases 检查新版本、下载、替换程序并重启。
 
-Windows：程序是一个文件夹（工程师排班管理\\工程师排班管理.exe），用 PowerShell 脚本等本程序退出后整体替换。
+Windows：程序是一个文件夹（工程师排班管理\\工程师排班管理.exe）。新版本下载到本机应用数据目录后，
+直接运行新版本的 exe（--apply-update 模式）等本程序退出、把文件复制到安装目录并重新打开，不依赖 PowerShell。
 Mac：程序是 工程师排班管理.app，用 shell 脚本等本程序退出后替换整个 .app。
 用户数据在系统的应用数据目录里，不受更新影响。
 """
@@ -18,6 +19,7 @@ import urllib.request
 import zipfile
 from pathlib import Path
 
+from .db import app_dir
 from .version import __version__
 
 REPO = "SlackerState/engineer-scheduler"
@@ -92,7 +94,12 @@ class Updater:
 
     def _download(self):
         try:
-            work = Path(tempfile.mkdtemp(prefix="es-update-"))
+            if sys.platform == "win32":
+                work = stage_dir()
+                shutil.rmtree(work, ignore_errors=True)
+                work.mkdir(parents=True, exist_ok=True)
+            else:
+                work = Path(tempfile.mkdtemp(prefix="es-update-"))
             zpath = work / "update.zip"
             req = urllib.request.Request(self.state["url"], headers={"User-Agent": "EngineerScheduler"})
             with urllib.request.urlopen(req, timeout=60) as r, open(zpath, "wb") as f:
@@ -133,19 +140,13 @@ class Updater:
         pid = os.getpid()
         work = self._new_path.parent.parent
         if sys.platform == "win32":
-            exe = dst / f"{APP_NAME}.exe"
-            script = work / "update.ps1"
-            script.write_text(
-                "$ErrorActionPreference = 'SilentlyContinue'\n"
-                f"Wait-Process -Id {pid} -Timeout 120\n"
-                "Start-Sleep -Seconds 1\n"
-                f"robocopy \"{self._new_path}\" \"{dst}\" /MIR /R:10 /W:1 | Out-Null\n"
-                f"Start-Process -FilePath \"{exe}\"\n"
-                f"Remove-Item -Recurse -Force \"{work}\"\n",
-                encoding="utf-8-sig")  # 带 BOM，Windows PowerShell 才能正确读中文路径
-            flags = 0x00000008 | 0x00000200 | 0x08000000  # DETACHED_PROCESS | NEW_PROCESS_GROUP | NO_WINDOW
-            subprocess.Popen(["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-WindowStyle", "Hidden",
-                              "-File", str(script)], creationflags=flags, close_fds=True)
+            # 不用 PowerShell 脚本（公司电脑常被组策略禁止运行脚本）：
+            # 直接启动新版本自己的 exe，进入 --apply-update 模式，由它等本程序退出后把自己复制过去
+            new_exe = self._new_path / f"{APP_NAME}.exe"
+            _log(f"启动新版本完成替换：{new_exe} -> {dst}（旧进程 {pid}）")
+            flags = 0x00000008 | 0x00000200  # DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP
+            subprocess.Popen([str(new_exe), "--apply-update", str(pid), str(dst)], cwd=str(self._new_path),
+                             creationflags=flags, close_fds=True)
         else:
             script = work / "update.sh"
             q = lambda p: "'" + str(p).replace("'", "'\\''") + "'"  # noqa: E731
@@ -163,9 +164,99 @@ class Updater:
         self.state.update(phase="restarting", message="正在重启以完成更新…")
 
     def cleanup_old(self):
-        """上次更新若异常中断留下的 .old 备份，启动时顺手清掉。"""
+        """清理上次更新留下的东西：Mac 的 .old 备份，Windows 的下载暂存目录。"""
         dst = install_path()
         if dst and sys.platform == "darwin":
             old = Path(str(dst) + ".old")
             if old.exists():
                 shutil.rmtree(old, ignore_errors=True)
+        if dst and sys.platform == "win32" and stage_dir() not in dst.parents:
+            shutil.rmtree(stage_dir(), ignore_errors=True)
+
+    @staticmethod
+    def pop_result() -> dict | None:
+        """上一次在线更新的结果（启动后提示一次）。"""
+        f = app_dir() / "update-result.json"
+        if not f.exists():
+            return None
+        try:
+            return json.loads(f.read_text("utf-8"))
+        except Exception:
+            return None
+        finally:
+            f.unlink(missing_ok=True)
+
+
+# ---------- Windows：新版本 exe 以 --apply-update 模式运行，完成替换 ----------
+def stage_dir() -> Path:
+    """Windows 下载解压新版本的位置（本机目录，不放漫游配置里）。"""
+    base = os.environ.get("LOCALAPPDATA") or tempfile.gettempdir()
+    return Path(base) / "EngineerScheduler" / "update"
+
+
+def _log(msg: str):
+    try:
+        from datetime import datetime
+        with open(app_dir() / "update.log", "a", encoding="utf-8") as f:
+            f.write(f"{datetime.now():%Y-%m-%d %H:%M:%S} {msg}\n")
+    except Exception:
+        pass
+
+
+def _wait_pid(pid: int, timeout_ms: int = 120000):
+    import ctypes
+    k32 = ctypes.windll.kernel32
+    h = k32.OpenProcess(0x00100000, False, pid)  # SYNCHRONIZE
+    if h:
+        k32.WaitForSingleObject(h, timeout_ms)
+        k32.CloseHandle(h)
+
+
+def _copy_with_retry(src: Path, dst: Path, seconds: float = 30) -> None:
+    import time
+    deadline = time.time() + seconds
+    while True:
+        try:
+            dst.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(src, dst)
+            return
+        except PermissionError:
+            if time.time() > deadline:
+                raise
+            time.sleep(0.5)
+
+
+def finish_windows_update(pid: int, target: str) -> None:
+    """由新版本 exe 执行：等旧程序退出 → 把自己所在的程序文件夹复制到安装位置 → 打开新版本。"""
+    src = Path(sys.executable).resolve().parent
+    dst = Path(target)
+    ok, msg = False, ""
+    try:
+        _log(f"开始替换：{src} -> {dst}，等待旧进程 {pid} 退出")
+        _wait_pid(pid)
+        import time
+        time.sleep(1)
+        files = [p for p in src.rglob("*") if p.is_file()]
+        for p in files:
+            _copy_with_retry(p, dst / p.relative_to(src))
+        # _internal 里旧版本多出来的文件删掉，避免新旧混用
+        keep = {p.relative_to(src) for p in files}
+        for p in (dst / "_internal").rglob("*"):
+            if p.is_file() and p.relative_to(dst) not in keep:
+                p.unlink(missing_ok=True)
+        ok, msg = True, f"已更新到 {__version__}"
+        _log(f"替换完成，共 {len(files)} 个文件")
+    except Exception as e:  # noqa: BLE001
+        msg = f"在线更新没有完成：{e}。请关闭软件后，手动下载新版本覆盖安装。"
+        _log(f"替换失败：{e!r}")
+    try:
+        (app_dir() / "update-result.json").write_text(
+            json.dumps({"ok": ok, "message": msg, "version": __version__}, ensure_ascii=False), encoding="utf-8")
+    except Exception:
+        pass
+    exe = dst / f"{APP_NAME}.exe"
+    try:
+        subprocess.Popen([str(exe)], cwd=str(dst), creationflags=0x00000008 | 0x00000200, close_fds=True)
+        _log(f"已重新打开：{exe}")
+    except Exception as e:  # noqa: BLE001
+        _log(f"重新打开失败：{e!r}")

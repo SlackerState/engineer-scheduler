@@ -764,6 +764,7 @@ async function init() {
   $('#btn-update').onclick = updateDialog;
   $('#u-check').onclick = () => checkUpdate(true);
   if (S.boot.settings.auto_check_update) setTimeout(() => checkUpdate(false), 3000);
+  if (S.boot.update_result) setTimeout(() => toast(S.boot.update_result.message, !S.boot.update_result.ok), 800);
 
   updateSyncState();
   setInterval(updateSyncState, 20000);

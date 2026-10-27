@@ -150,6 +150,62 @@ jobs:
         shell: pwsh
         run: Compress-Archive -Path "dist/$env:APP_NAME" -DestinationPath "${{ matrix.artifact }}.zip"
 
+      - name: 在线更新测试（Windows：检查 → 下载 → 替换 → 重新打开）
+        if: runner.os == 'Windows'
+        shell: pwsh
+        timeout-minutes: 8
+        run: |
+          $root = Join-Path $env:RUNNER_TEMP "upd"
+          $inst = Join-Path $root "install"
+          New-Item -ItemType Directory -Force $inst | Out-Null
+          Copy-Item "dist\$env:APP_NAME" $inst -Recurse
+          $app = Join-Path $inst $env:APP_NAME
+          $exe = Join-Path $app "$env:APP_NAME.exe"
+          # 给“旧版”做记号：_internal 里多一个文件、exe 时间改成 30 天前；更新后记号文件应被删除、exe 被覆盖
+          Set-Content (Join-Path $app "_internal\OLD_MARKER.txt") "old"
+          (Get-Item $exe).LastWriteTime = (Get-Date).AddDays(-30)
+          # 本地假发布页，版本号故意更大
+          $feed = Join-Path $root "feed"; New-Item -ItemType Directory -Force $feed | Out-Null
+          $zip = Join-Path $feed "EngineerScheduler-windows.zip"
+          Copy-Item "${{ matrix.artifact }}.zip" $zip
+          $size = (Get-Item $zip).Length
+          ('{"tag_name":"v99.0.0","body":"ci","assets":[{"name":"EngineerScheduler-windows.zip","size":' + $size +
+           ',"browser_download_url":"http://127.0.0.1:18950/EngineerScheduler-windows.zip"}]}') | Set-Content (Join-Path $feed "latest.json") -Encoding ascii
+          $srv = Start-Process python -ArgumentList "-m", "http.server", "18950", "--bind", "127.0.0.1" -WorkingDirectory $feed -PassThru -WindowStyle Hidden
+          $env:ES_DATA_DIR = Join-Path $root "data"
+          $old = Start-Process -FilePath $exe -ArgumentList "--web", "--port", "8768" -PassThru
+          function Call($m, $body) { Invoke-RestMethod -Method Post -Uri "http://127.0.0.1:8768/api/$m" -Body $body -TimeoutSec 15 }
+          for ($i = 0; $i -lt 30; $i++) { try { if ((Call "bootstrap" "[]").ok) { break } } catch { Start-Sleep -Seconds 2 } }
+          Call "save_settings" '[{"update_api_url":"http://127.0.0.1:18950/latest.json","auto_check_update":false}]' | Out-Null
+          $c = (Call "update_check" "[]").result
+          Write-Host "检查更新：$($c.message) available=$($c.available) can_apply=$($c.can_apply)"
+          if (-not $c.available -or -not $c.can_apply) { exit 1 }
+          Call "update_download" "[]" | Out-Null
+          for ($i = 0; $i -lt 90; $i++) { $s = (Call "update_state" "[]").result; if ($s.phase -in "ready", "error") { break }; Start-Sleep -Seconds 1 }
+          Write-Host "下载：$($s.phase) $($s.message)"
+          if ($s.phase -ne "ready") { exit 1 }
+          Call "update_apply" "[]" | Out-Null
+          $old.WaitForExit(30000) | Out-Null
+          Write-Host "旧进程已退出：$($old.HasExited)"
+          $log = Join-Path $env:ES_DATA_DIR "update.log"
+          $relaunched = $null
+          for ($i = 0; $i -lt 90; $i++) {
+            $relaunched = Get-Process -ErrorAction SilentlyContinue | Where-Object { $_.Path -eq $exe }
+            if ((Test-Path $log) -and (Select-String -Path $log -Pattern "已重新打开" -Quiet) -and $relaunched) { break }
+            Start-Sleep -Seconds 1
+          }
+          Write-Host "---- update.log ----"; Get-Content $log -Encoding utf8 -ErrorAction SilentlyContinue
+          $markerGone = -not (Test-Path (Join-Path $app "_internal\OLD_MARKER.txt"))
+          $exeNew = (Get-Item $exe).LastWriteTime -gt (Get-Date).AddDays(-1)
+          $replaced = Select-String -Path $log -Pattern "替换完成" -Quiet
+          Write-Host "替换完成：$replaced  记号文件已删：$markerGone  exe 已覆盖：$exeNew  已重新打开：$([bool]$relaunched)"
+          $relaunched | Stop-Process -Force -ErrorAction SilentlyContinue
+          Get-CimInstance Win32_Process -Filter "Name = 'msedge.exe'" | Where-Object { $_.CommandLine -like "*es-ui-*" } |
+            ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
+          Stop-Process -Id $srv.Id -Force -ErrorAction SilentlyContinue
+          if (-not ($replaced -and $markerGone -and $exeNew -and $relaunched)) { Write-Host "在线更新测试失败"; exit 1 }
+          Write-Host "Windows 在线更新正常"
+
       - uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.artifact }}

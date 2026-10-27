@@ -26,6 +26,7 @@ class Api:
         self._sync = Syncer(self._db, self._d365)
         self._updater = Updater(self._db.settings)
         self._updater.cleanup_old()
+        self._update_result = self._updater.pop_result()  # 上次在线更新的结果，界面提示一次
         self._sync.rebuild_dispatches()  # 排班规则可能随版本变化，启动时按当前规则重排一次
         self._window = None  # 桌面模式下由 main.py 注入，用于文件对话框
         self._ui_proc = None  # Windows 的 Edge 应用窗口进程，由 main.py 注入
@@ -39,6 +40,7 @@ class Api:
             "today": date.today().isoformat(),
             "slot_now": "上午" if datetime.now().hour < noon else "下午",
             "desktop": self._window is not None, "data_dir": str(app_dir()), "version": __version__,
+            "update_result": self._update_result,
         }
 
     # ---------- 在线更新 ----------
@@ -69,6 +71,9 @@ class Api:
             else:
                 self.shutdown()
                 os._exit(0)
+            # 兜底：正常退出流程卡住时也要让出程序文件，否则更新没法替换
+            time.sleep(8)
+            os._exit(0)
         threading.Thread(target=quit_soon, daemon=True).start()
         return {"ok": True}
 

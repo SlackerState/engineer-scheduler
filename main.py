@@ -3,6 +3,7 @@
   python main.py            打开桌面窗口（Windows 用 Edge 应用窗口，Mac 用 WKWebView）
   python main.py --web      网页模式，浏览器访问 http://127.0.0.1:8765
   python main.py --selftest 结果.json   打包自检（CI 用）
+  工程师排班管理.exe --apply-update <旧进程号> <安装目录>   Windows 在线更新时由新版本自动执行
 """
 from __future__ import annotations
 
@@ -104,10 +105,16 @@ def main():
     ap.add_argument("--host", default="127.0.0.1")
     ap.add_argument("--port", type=int, default=8765)
     ap.add_argument("--selftest", metavar="OUT_JSON")
+    ap.add_argument("--apply-update", nargs=2, metavar=("OLD_PID", "TARGET_DIR"),
+                    help="Windows 在线更新：由新版本执行，替换安装目录后重新打开")
     args = ap.parse_args()
 
     if args.selftest:
         selftest(args.selftest)
+        return
+    if args.apply_update:
+        from backend.updater import finish_windows_update
+        finish_windows_update(int(args.apply_update[0]), args.apply_update[1])
         return
 
     from backend.api import Api
