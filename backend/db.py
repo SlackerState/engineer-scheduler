@@ -46,6 +46,7 @@ DEFAULT_SETTINGS = {
     # 同步
     "auto_sync": False,
     "sync_interval_min": 15,
+    "risk_hours": 24,  # 距预约（考核截止）不足这么多小时且未到达 = 即将超期
     "auto_check_update": True,
     "update_api_url": "",  # 留空 = GitHub Releases 最新版本
     "browser_channel": "auto",
@@ -71,6 +72,7 @@ CREATE TABLE IF NOT EXISTS schedule (
     day TEXT NOT NULL,
     slot TEXT NOT NULL,
     status TEXT NOT NULL,
+    auto INTEGER NOT NULL DEFAULT 0,  -- 1 = 派单时自动标的「外出」，派单撤销时可自动清掉
     PRIMARY KEY (engineer_id, day, slot)
 );
 CREATE TABLE IF NOT EXISTS dispatches (
@@ -116,6 +118,8 @@ CREATE TABLE IF NOT EXISTS orders (
     warranty TEXT DEFAULT '',
     d365_json TEXT DEFAULT '',
     synced_at TEXT DEFAULT '',
+    planned_day TEXT DEFAULT '',   -- 调度员定的实际计划上门日期（只存本地）
+    planned_slot TEXT DEFAULT '',
     created_at TEXT DEFAULT (datetime('now', 'localtime')),
     updated_at TEXT DEFAULT (datetime('now', 'localtime'))
 );
@@ -140,6 +144,24 @@ class DB:
         self.conn.execute("PRAGMA foreign_keys = ON")
         self.conn.executescript(SCHEMA)
         self.conn.commit()
+        self._migrate()
+
+    def _migrate(self):
+        """给旧版本建的数据库补新列。"""
+        with self.lock:
+            cols = {r[1] for r in self.conn.execute("PRAGMA table_info(orders)")}
+            for name in ("planned_day", "planned_slot"):
+                if name not in cols:
+                    self.conn.execute(f"ALTER TABLE orders ADD COLUMN {name} TEXT DEFAULT ''")
+            cols = {r[1] for r in self.conn.execute("PRAGMA table_info(schedule)")}
+            if "auto" not in cols:
+                self.conn.execute("ALTER TABLE schedule ADD COLUMN auto INTEGER NOT NULL DEFAULT 0")
+                # 旧版本按派单自动标的「外出」：所在格子有 D365 派单的，视为自动标记
+                self.conn.execute(
+                    "UPDATE schedule SET auto=1 WHERE status='外出' AND EXISTS (SELECT 1 FROM dispatches d "
+                    "WHERE d.engineer_id=schedule.engineer_id AND d.day=schedule.day AND d.slot=schedule.slot "
+                    "AND d.source='d365')")
+            self.conn.commit()
 
     # ---------- 通用 ----------
     def q(self, sql: str, params=()) -> list[dict]:
@@ -211,17 +233,21 @@ class DB:
             self.conn.commit()
 
     # ---------- 排班 ----------
-    def set_cell(self, eid: int, day: str, slot: str, status: str):
+    def set_cell(self, eid: int, day: str, slot: str, status: str, auto: bool = False):
         if status:
-            self.x("INSERT INTO schedule(engineer_id, day, slot, status) VALUES(?,?,?,?) "
-                   "ON CONFLICT(engineer_id, day, slot) DO UPDATE SET status = excluded.status",
-                   (eid, day, slot, status))
+            self.x("INSERT INTO schedule(engineer_id, day, slot, status, auto) VALUES(?,?,?,?,?) "
+                   "ON CONFLICT(engineer_id, day, slot) DO UPDATE SET status = excluded.status, auto = excluded.auto",
+                   (eid, day, slot, status, int(auto)))
         else:
             self.x("DELETE FROM schedule WHERE engineer_id=? AND day=? AND slot=?", (eid, day, slot))
 
     def cell(self, eid: int, day: str, slot: str) -> str:
         r = self.one("SELECT status FROM schedule WHERE engineer_id=? AND day=? AND slot=?", (eid, day, slot))
         return r["status"] if r else ""
+
+    def cell_auto(self, eid: int, day: str, slot: str) -> bool:
+        r = self.one("SELECT auto FROM schedule WHERE engineer_id=? AND day=? AND slot=?", (eid, day, slot))
+        return bool(r and r["auto"])
 
     # ---------- 订单 ----------
     def update_order(self, oid: int, fields: dict):

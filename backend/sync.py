@@ -140,25 +140,31 @@ class Syncer:
         return False
 
     def sync_dispatch(self, row: dict, engineers: list[dict]):
-        """D365 预约上门时间 + 工程师 → 派单记录（每单一条，改约会自动挪动）。"""
-        key = f"so:{row['d365_id']}"
+        o = self.db.one("SELECT * FROM orders WHERE d365_id=?", (row["d365_id"],))
+        if o:
+            self.place_order(o, engineers)
+
+    def place_order(self, o: dict, engineers: list[dict] | None = None):
+        """工单 → 派单记录（每单一条）。上门时间按 实际到达 > 出发 > 本地计划；
+        D365 的预约上门时间是考核截止，往往比实际晚很多天，不用来排班。时间变了会自动挪动。"""
+        if not o.get("d365_id"):
+            return
+        engineers = engineers if engineers is not None else self.db.engineers()
+        key = f"so:{o['d365_id']}"
         old = self.db.q("SELECT * FROM dispatches WHERE booking_id=?", (key,))
-        eng = logic.match_engineer(engineers, row["engineer"])
-        want = None
-        if eng and row["appointment"] and row["d365_status_code"] != 15:
-            day, hhmm = row["appointment"][:10], row["appointment"][11:16]
-            noon = int(self.db.settings().get("noon_hour") or 12)
-            slot = "上午" if int(hhmm[:2] or 0) < noon else "下午"
-            want = (day, eng["id"], slot)
+        eng = logic.match_engineer(engineers, o["engineer"])
+        v = logic.visit_of(o, int(self.db.settings().get("noon_hour") or 12))
+        want = (v["day"], eng["id"], v["slot"]) if eng and v else None
         keep = None
         for d in old:
             if want and (d["day"], d["engineer_id"], d["slot"]) == want and keep is None:
                 keep = d
             else:
                 self.db.x("DELETE FROM dispatches WHERE id=?", (d["id"],))
+                logic.unmark_out(self.db, d["engineer_id"], d["day"], d["slot"])
         if not want:
             return
-        info = (row["customer"], row["address"], row["service_order_no"])
+        info = (o["customer"], o["address"], o["service_order_no"])
         if keep:
             self.db.x("UPDATE dispatches SET customer=?, address=?, order_no=? WHERE id=?", (*info, keep["id"]))
             return
@@ -167,4 +173,12 @@ class Syncer:
                   "VALUES(?,?,?,?,?,?, 'd365', ?)", (day, eid, slot, *info, key))
         warn = logic.mark_out(self.db, eid, day, slot)
         if warn:
-            self._log(f"{row['service_order_no']} {eng['name']} {day} {slot}：{warn}")
+            self._log(f"{o['service_order_no']} {eng['name']} {day} {slot}：{warn}")
+
+    def rebuild_dispatches(self) -> int:
+        """按当前规则重排所有 D365 工单的派单（升级后、改了人员别名后用）。"""
+        engineers = self.db.engineers()
+        rows = self.db.q("SELECT * FROM orders WHERE d365_id IS NOT NULL")
+        for o in rows:
+            self.place_order(o, engineers)
+        return len(rows)

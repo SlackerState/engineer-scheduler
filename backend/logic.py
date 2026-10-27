@@ -1,7 +1,7 @@
 """排班表 / 今日查询 / 派单录入 的业务规则（对应原 Excel 公式和「提交派单」宏）。"""
 from __future__ import annotations
 
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 
 from .db import DB, SLOTS
 
@@ -44,7 +44,8 @@ def _dispatch_counts(db: DB, day_from: str, day_to: str) -> dict:
 JOB_SQL = """
 SELECT d.id AS dispatch_id, d.day, d.slot, d.engineer_id, d.customer, d.address, d.order_no, d.source,
        o.id AS order_id, o.udesk_no, o.service_order_no, o.d365_status, o.status AS order_status,
-       o.appointment, o.problem, o.order_type, o.serial, o.model, o.contact
+       o.status, o.d365_status_code, o.appointment, o.arrival_time, o.setoff_time, o.planned_day, o.planned_slot,
+       o.problem, o.order_type, o.serial, o.model, o.contact
 FROM dispatches d
 LEFT JOIN orders o ON (d.booking_id IS NOT NULL AND o.d365_id = substr(d.booking_id, 4))
                    OR (d.booking_id IS NULL AND d.order_no <> '' AND o.service_order_no = d.order_no)
@@ -54,8 +55,9 @@ ORDER BY d.day, d.slot, o.appointment, d.id
 
 
 def jobs_between(db: DB, day_from: str, day_to: str) -> list[dict]:
-    """派单记录 + 对应的订单（D365 工单）信息。"""
-    return db.q(JOB_SQL, (day_from, day_to))
+    """派单记录 + 对应的订单（D365 工单）信息、上门时间来源和超期风险。"""
+    s = db.settings()
+    return [enrich(j, s) if j["order_id"] else j for j in db.q(JOB_SQL, (day_from, day_to))]
 
 
 def schedule_grid(db: DB, start: str, days: int) -> dict:
@@ -69,7 +71,8 @@ def schedule_grid(db: DB, start: str, days: int) -> dict:
     for j in jobs_between(db, dates[0], dates[-1]):
         jobs.setdefault((j["engineer_id"], j["day"], j["slot"]), []).append({
             "order_id": j["order_id"], "no": j["service_order_no"] or j["order_no"], "udesk_no": j["udesk_no"],
-            "customer": j["customer"], "d365_status": j["d365_status"], "appointment": j["appointment"]})
+            "customer": j["customer"], "d365_status": j["d365_status"], "appointment": j["appointment"],
+            "visit": j.get("visit"), "risk": j.get("risk")})
     rows = []
     totals = {"外勤": {}, "驻点": {}}
     for e in engs:
@@ -102,13 +105,18 @@ def day_status(db: DB, day: str, slot: str) -> dict:
             "available": is_available(raw, e["type"], n_slot),
             "day_count": len(jobs), "slot_count": n_slot, "jobs": jobs,
         })
-    # 当天所有预约上门的 D365 工单（包括人员表以外的工程师）
-    engs = db.engineers()
-    orders = db.q("SELECT id, udesk_no, service_order_no, customer, engineer, d365_status, status, appointment, "
-                  "address, order_type, problem FROM orders WHERE substr(appointment, 1, 10)=? "
-                  "ORDER BY appointment, id", (day,))
+    # 当天上门的工单（按实际到达 > 出发 > 本地计划；包括人员表以外的工程师）
+    engs, s = db.engineers(), db.settings()
+    orders = db.q("SELECT * FROM orders WHERE substr(arrival_time, 1, 10)=? "
+                  "OR (COALESCE(arrival_time, '')='' AND substr(setoff_time, 1, 10)=?) "
+                  "OR (COALESCE(arrival_time, '')='' AND COALESCE(setoff_time, '')='' AND planned_day=?)",
+                  (day, day, day))
+    orders = [enrich(o, s) for o in orders]
+    orders = [o for o in orders if o["visit"] and o["visit"]["day"] == day]
     for o in orders:
+        o.pop("d365_json", None)
         o["local"] = (match_engineer(engs, o["engineer"]) or {}).get("name", "")
+    orders.sort(key=lambda o: (o["visit"]["slot"], o["visit"]["time"] or "99", o["id"]))
     return {
         "day": day, "slot": slot, "rows": out, "orders": orders,
         "field_available": sum(1 for r in out if r["type"] == "外勤" and r["available"]),
@@ -141,14 +149,84 @@ def check_dispatch(db: DB, f: dict) -> dict:
 
 
 def mark_out(db: DB, eid: int, day: str, slot: str) -> str:
-    """派单后同步排班表：空白/空闲 → 外出；外出不变；其它状态保留并返回提醒。"""
+    """派单后同步排班表：空白/空闲 → 外出（标记为自动）；外出不变；其它状态保留并返回提醒。"""
     cur = db.cell(eid, day, slot)
     if cur in ("", "空闲"):
-        db.set_cell(eid, day, slot, "外出")
+        db.set_cell(eid, day, slot, "外出", auto=True)
         return ""
     if cur == "外出":
         return ""
     return f"排班表上该时段是「{cur}」，未改成外出，请人工确认。"
+
+
+def unmark_out(db: DB, eid: int, day: str, slot: str):
+    """派单撤走后：该时段已无派单、且「外出」是自动标的，就清掉。手工标的不动。"""
+    left = db.one("SELECT COUNT(*) AS n FROM dispatches WHERE engineer_id=? AND day=? AND slot=?", (eid, day, slot))
+    if not left["n"] and db.cell(eid, day, slot) == "外出" and db.cell_auto(eid, day, slot):
+        db.set_cell(eid, day, slot, "")
+
+
+# ---------- 上门时间与超期（预约上门时间 = 考核截止，往往比实际上门晚很多天） ----------
+SLOT_HOUR = {"上午": 9, "下午": 14}
+
+
+def _dt(s: str | None) -> datetime | None:
+    try:
+        return datetime.strptime((s or "")[:16], "%Y-%m-%d %H:%M")
+    except ValueError:
+        return None
+
+
+def visit_of(o: dict, noon: int = 12) -> dict | None:
+    """排班用的上门时间：实际到达 > 出发 > 本地计划；都没有 = 待排期（返回 None）。"""
+    if o.get("status") == "已取消" or o.get("d365_status_code") == 15:
+        return None
+    for key, src in (("arrival_time", "到达"), ("setoff_time", "出发")):
+        t = _dt(o.get(key))
+        if t:
+            return {"day": t.date().isoformat(), "slot": "上午" if t.hour < noon else "下午",
+                    "time": t.strftime("%H:%M"), "source": src}
+    if o.get("planned_day"):
+        return {"day": o["planned_day"], "slot": o.get("planned_slot") or "上午", "time": "", "source": "计划"}
+    return None
+
+
+def _span(hours: float) -> str:
+    return f"{int(hours)} 小时" if hours < 48 else f"{int(hours // 24)} 天"
+
+
+def risk_of(o: dict, soon_hours: float = 24, now: datetime | None = None) -> dict:
+    """超期风险（以预约上门时间为考核截止）：
+    overdue 已超期未到达 · soon 即将超期 · plan_late 计划上门晚于截止 · late 已到达但超期 · 空 = 无风险"""
+    out = {"level": "", "text": "", "left": ""}
+    appt = _dt(o.get("appointment"))
+    if not appt or o.get("status") == "已取消":
+        return out
+    arrived = _dt(o.get("arrival_time"))
+    if arrived:
+        if arrived > appt:
+            out.update(level="late", text=f"超期 {_span((arrived - appt).total_seconds() / 3600)} 到达")
+        return out
+    if o.get("status") == "已完成":
+        return out
+    left = (appt - (now or datetime.now())).total_seconds() / 3600
+    out["left"] = f"已过 {_span(-left)}" if left < 0 else f"剩 {_span(left)}"
+    if left < 0:
+        out.update(level="overdue", text=f"已超期 {_span(-left)}")
+    elif left <= soon_hours:
+        out.update(level="soon", text=f"{_span(left)}后超期")
+    elif o.get("planned_day"):
+        p = datetime.fromisoformat(o["planned_day"]).replace(hour=SLOT_HOUR.get(o.get("planned_slot") or "上午", 9))
+        if p > appt and not _dt(o.get("setoff_time")):
+            out.update(level="plan_late", text="计划晚于预约截止")
+    return out
+
+
+def enrich(o: dict, settings: dict) -> dict:
+    """给订单加上 visit（排班上门时间）和 risk（超期风险）。"""
+    o["visit"] = visit_of(o, int(settings.get("noon_hour") or 12))
+    o["risk"] = risk_of(o, float(settings.get("risk_hours") or 24))
+    return o
 
 
 def submit_dispatch(db: DB, f: dict, force: bool = False) -> dict:

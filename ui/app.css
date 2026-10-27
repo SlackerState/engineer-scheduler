@@ -80,6 +80,18 @@ table.grid { border-collapse: collapse; width: 100%; }
 .card.act { background: #f6f9ff; border-color: #cfdcf3; }
 .card.act .lbl { color: var(--muted); width: 64px; flex: none; }
 .form select:disabled, .form input:disabled { background: #f3f4f6; color: var(--muted); }
+.risk-overdue { background: #fdecea; color: var(--bad); font-weight: 600; }
+.risk-soon { background: #fff4e0; color: var(--warn); font-weight: 600; }
+.risk-plan_late { background: #fff4e0; color: var(--warn); }
+.risk-late { background: #f3f4f6; color: #8a4b4b; }
+.risk-pool { background: #eef2f8; color: var(--accent); }
+.tag.src-到达 { color: var(--good); border-color: #bfe3c6; }
+.tag.src-出发 { color: var(--warn); border-color: #f3d3a5; }
+.tag.src-计划 { color: var(--accent); border-color: #cfdcf3; }
+.kpi.click { cursor: pointer; }
+.kpi.click:hover { border-color: var(--accent); }
+.card.act.plan { background: #f7fbf7; border-color: #d3e8d6; }
+td.click u { text-decoration-color: #b8c3d6; }
 .tag { font-size: 11px; color: var(--muted); border: 1px solid var(--line); border-radius: 4px; padding: 0 4px; margin-left: 4px; }
 
 /* 排班表 */

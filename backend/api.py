@@ -15,6 +15,8 @@ from .sync import Syncer
 from .updater import Updater
 from .version import __version__
 
+RISK_OPEN = ("overdue", "soon", "plan_late")
+
 
 class Api:
     def __init__(self, db: DB | None = None):
@@ -24,6 +26,7 @@ class Api:
         self._sync = Syncer(self._db, self._d365)
         self._updater = Updater(self._db.settings)
         self._updater.cleanup_old()
+        self._sync.rebuild_dispatches()  # 排班规则可能随版本变化，启动时按当前规则重排一次
         self._window = None  # 桌面模式下由 main.py 注入，用于文件对话框
         self._ui_proc = None  # Windows 的 Edge 应用窗口进程，由 main.py 注入
 
@@ -77,10 +80,13 @@ class Api:
         return self._db.engineers()
 
     def save_engineer(self, data):
-        return self._db.save_engineer(data)
+        eid = self._db.save_engineer(data)
+        self._sync.rebuild_dispatches()  # 姓名/别名变了，工单对应的工程师可能变
+        return eid
 
     def delete_engineer(self, eid):
         self._db.delete_engineer(int(eid))
+        self._sync.rebuild_dispatches()
 
     def move_engineer(self, eid, delta):
         self._db.move_engineer(int(eid), int(delta))
@@ -108,12 +114,22 @@ class Api:
         return logic.list_dispatches(self._db, day_from, day_to)
 
     def delete_dispatch(self, did):
+        d = self._db.one("SELECT * FROM dispatches WHERE id=?", (int(did),))
         self._db.x("DELETE FROM dispatches WHERE id=?", (int(did),))
+        if d:
+            logic.unmark_out(self._db, d["engineer_id"], d["day"], d["slot"])
 
     # ---------- 订单 ----------
+    def _enrich(self, rows: list[dict]) -> list[dict]:
+        s = self._db.settings()
+        for r in rows:
+            r.pop("d365_json", None)
+            logic.enrich(r, s)
+        return rows
+
     def list_orders(self, status="", keyword="", engineer=""):
         sql, p = "SELECT * FROM orders WHERE 1=1", []
-        if status == "未完成":
+        if status in ("未完成", "超期风险", "待排期"):
             sql += " AND status NOT IN ('已完成','已取消')"
         elif status:
             sql += " AND status=?"
@@ -126,10 +142,33 @@ class Api:
                     "OR problem LIKE ? OR progress LIKE ? OR loan_no LIKE ?)")
             p += [f"%{keyword}%"] * 7
         sql += " ORDER BY day DESC, id DESC"
-        rows = self._db.q(sql, p)
-        for r in rows:
-            r.pop("d365_json", None)
+        rows = self._enrich(self._db.q(sql, p))
+        if status == "超期风险":
+            rows = [r for r in rows if r["risk"]["level"] in RISK_OPEN]
+            rows.sort(key=lambda r: r["appointment"])
+        elif status == "待排期":
+            rows = [r for r in rows if r["d365_id"] and not r["visit"]]
+            rows.sort(key=lambda r: r["appointment"] or "9999")
         return rows
+
+    def unscheduled(self):
+        """待排期：还没出发/到达、也没定本地计划的未完结 D365 工单，按预约截止时间排序。"""
+        return self.list_orders("待排期")
+
+    def set_plan(self, oid, day, slot=""):
+        """设置本地计划上门时间（day 为空 = 清除），并同步派单和排班。只存软件里，不写 D365。"""
+        if day and slot not in SLOTS:
+            slot = "上午"
+        self._db.update_order(int(oid), {"planned_day": day or "", "planned_slot": slot if day else ""})
+        o = self._db.one("SELECT * FROM orders WHERE id=?", (int(oid),))
+        self._sync.place_order(o)
+        return self.get_order(oid)
+
+    def risk_summary(self):
+        rows = self.list_orders("未完成")
+        count = lambda lv: sum(1 for r in rows if r["risk"]["level"] == lv)  # noqa: E731
+        return {"overdue": count("overdue"), "soon": count("soon"), "plan_late": count("plan_late"),
+                "unscheduled": sum(1 for r in rows if r["d365_id"] and not r["visit"])}
 
     def orders_since(self, day, status=""):
         """创建日期在 day 及之后的工单，按创建时间倒序。"""
@@ -139,9 +178,7 @@ class Api:
         elif status:
             sql += " AND status=?"
             p.append(status)
-        rows = self._db.q(sql + " ORDER BY day DESC, id DESC", p)
-        for r in rows:
-            r.pop("d365_json", None)
+        rows = self._enrich(self._db.q(sql + " ORDER BY day DESC, id DESC", p))
         lookback = int(self._db.settings().get("lookback_days") or 30)
         earliest = (date.today() - timedelta(days=lookback)).isoformat()
         return {"rows": rows, "synced_from": earliest, "beyond_sync": day < earliest}
@@ -152,8 +189,10 @@ class Api:
 
     def get_order(self, oid):
         o = self._db.one("SELECT * FROM orders WHERE id=?", (int(oid),))
-        if o and o.get("d365_id"):
-            o["d365_link"] = self._d365.record_url(o["d365_id"])
+        if o:
+            self._enrich([o])
+            if o.get("d365_id"):
+                o["d365_link"] = self._d365.record_url(o["d365_id"])
         return o
 
     def save_order(self, data):

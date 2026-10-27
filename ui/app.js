@@ -73,6 +73,12 @@ function show(view) {
     people: loadPeople, settings: loadSettings})[view]();
 }
 
+// 超期风险徽标 / 上门时间（预约上门时间只是考核截止，上门按 到达 > 出发 > 计划）
+const riskBadge = r => r && r.level ? `<span class="badge risk-${r.level}">${esc(r.text)}</span>` : '';
+const visitText = v => v ? `${esc(v.day.slice(5).replace('-', '/'))} ${esc(v.time || v.slot)}<span class="tag src-${esc(v.source)}">${esc(v.source)}</span>` : '';
+const deadlineHtml = o => o.appointment
+  ? `${esc(o.appointment.slice(5).replace('-', '/'))}${o.risk && o.risk.left ? `<div class="muted small">${esc(o.risk.left)}</div>` : ''}` : '<span class="muted">—</span>';
+
 // ======================= 订单清单 =======================
 async function loadOrders() {
   const rows = await safe(() => api('list_orders', $('#o-status').value, $('#o-kw').value.trim(), $('#o-eng').value));
@@ -82,7 +88,7 @@ async function loadOrders() {
   updateBatch();
   if (!rows.length) { t.innerHTML = '<tr><td class="empty">没有订单。点左下「同步 D365」拉取 Udesk 创建的订单。</td></tr>'; return; }
   t.innerHTML = `<thead><tr><th class="ck"><input type="checkbox" id="o-all" title="全选可改派的订单"></th><th>日期</th><th>Udesk 工单号</th><th>服务订单号</th><th>客户</th><th>机器序列号</th>
-    <th>问题</th><th>工程师</th><th>状态</th><th>D365 状态</th><th>预约上门</th><th>处理进度</th></tr></thead><tbody>` +
+    <th>问题</th><th>工程师</th><th>状态</th><th>D365 状态</th><th>上门</th><th>预约截止</th><th>超期</th><th>处理进度</th></tr></thead><tbody>` +
     rows.map(o => `<tr class="click" data-id="${o.id}">
       <td class="ck">${ASSIGNABLE.includes(o.d365_status_code) ? `<input type="checkbox" data-ck="${o.id}">` : ''}</td>
       <td class="nowrap">${esc(o.day)}</td><td class="nowrap mono">${esc(o.udesk_no)}</td>
@@ -90,13 +96,15 @@ async function loadOrders() {
       <td>${esc(o.customer)}</td><td class="mono">${esc(o.serial)}${o.model ? `<div class="muted small">${esc(o.model)}</div>` : ''}</td>
       <td class="wrap">${esc((o.problem || '').slice(0, 140))}</td><td class="nowrap">${esc(o.engineer)}</td>
       <td><span class="badge b-${esc(o.status)}">${esc(o.status)}</span></td>
-      <td class="nowrap">${esc(o.d365_status)}</td><td class="nowrap">${esc(o.appointment)}</td>
+      <td class="nowrap">${esc(o.d365_status)}</td>
+      <td class="nowrap">${visitText(o.visit) || (o.d365_id && !['已完成', '已取消'].includes(o.status) ? '<span class="badge risk-pool">待排期</span>' : '')}</td>
+      <td class="nowrap">${deadlineHtml(o)}</td><td>${riskBadge(o.risk)}</td>
       <td class="wrap">${esc(o.progress)}</td></tr>`).join('') + '</tbody>';
 }
 
 const D365_INFO = [
   ['udesk_no', 'Udesk 工单号'], ['order_type', '订单类型'], ['d365_status', 'D365 状态'], ['network', '服务网点'],
-  ['appointment', '预约上门'], ['dispatch_time', '派单时间'], ['setoff_time', '出发时间'], ['arrival_time', '到达时间'],
+  ['appointment', '预约上门（考核截止）'], ['dispatch_time', '派单时间'], ['setoff_time', '出发时间'], ['arrival_time', '到达时间'],
   ['complete_time', '现场完工'], ['address', '设备地址'], ['contact', '设备联系人'], ['model', '机型'],
   ['warranty', '保修状态'], ['synced_at', '最后同步'],
 ];
@@ -113,10 +121,28 @@ function d365ActionsHtml(o) {
     <div class="row"><span class="lbl">工程师</span><b>${esc(o.engineer) || '<span class="muted">未派工</span>'}</b>
       ${canAssign ? `<button class="primary" id="od-assign" style="margin-left:auto">${code === 10 ? '派工' : '改派工程师'}</button>`
         : '<span class="muted small" style="margin-left:auto">当前状态 D365 不允许派工/改派</span>'}</div>
-    <div class="row"><span class="lbl">预约上门</span>
+    <div class="row"><span class="lbl">预约截止</span>
       <input type="datetime-local" id="od-appt" value="${esc((o.appointment || '').replace(' ', 'T'))}" ${canAppt ? '' : 'disabled'}>
       ${canAppt ? '<button id="od-appt-save" style="margin-left:auto">保存到 D365</button>'
         : '<span class="muted small" style="margin-left:auto">D365 只允许「已创建」时改约，之后需 CC 在 D365 里改</span>'}</div>
+  </div>`;
+}
+
+// 上门安排：本地计划上门（只存软件里），以及 D365 的实际出发/到达和考核截止
+function visitPlanHtml(o) {
+  const done = ['已完成', '已取消'].includes(o.status);
+  const slots = S.boot.slots.map(s => `<option ${s === (o.planned_slot || '上午') ? 'selected' : ''}>${s}</option>`).join('');
+  return `<div class="card act plan">
+    <div class="row"><b>上门安排</b><span class="muted small">排班表按 实际到达 → 出发 → 计划上门 排</span>
+      <span style="margin-left:auto">${riskBadge(o.risk)}</span></div>
+    <div class="row"><span class="lbl">考核截止</span><b>${esc(o.appointment) || '—'}</b>
+      ${o.risk && o.risk.left ? `<span class="muted small">${esc(o.risk.left)}</span>` : ''}</div>
+    <div class="row"><span class="lbl">计划上门</span>
+      <input type="date" id="od-plan-day" value="${esc(o.planned_day || '')}" ${done ? 'disabled' : ''}>
+      <select id="od-plan-slot" ${done ? 'disabled' : ''}>${slots}</select>
+      ${done ? '' : `<button id="od-plan-save" style="margin-left:auto">保存计划</button>${o.planned_day ? '<button class="link" id="od-plan-clear">清除</button>' : ''}`}</div>
+    <div class="row"><span class="lbl">实际</span><span class="small">出发 ${esc(o.setoff_time) || '—'} · 到达 ${esc(o.arrival_time) || '—'}</span></div>
+    <div class="row"><span class="lbl">排班位置</span>${o.visit ? visitText(o.visit) : '<span class="badge risk-pool">待排期</span>'}</div>
   </div>`;
 }
 
@@ -178,7 +204,7 @@ async function openOrder(id) {
     <h2>${o.id ? '订单 ' + esc(o.service_order_no || o.udesk_no || '#' + o.id) : '手工新增订单'}
       ${o.d365_link ? '<button class="link" id="od-open">在 D365 打开 ↗</button>' : ''}
       <button class="x" id="od-close">关闭</button></h2>
-    ${fromD365 ? d365ActionsHtml(o) : ''}
+    ${fromD365 ? d365ActionsHtml(o) + visitPlanHtml(o) : ''}
     <div class="sec">${fromD365 ? '本地记录 <span class="muted small">（只保存在软件里，不写回 D365）</span>' : '订单信息'}</div>
     <form class="form" id="od-form" style="display:grid;gap:10px">
       <div class="two"><label>日期<input name="day" type="date" value="${esc(o.day)}"></label>
@@ -198,7 +224,16 @@ async function openOrder(id) {
   d.hidden = false;
   $('#od-close').onclick = () => (d.hidden = true);
   if ($('#od-open')) $('#od-open').onclick = () => api('open_url', o.d365_link);
-  const reopen = () => { loadOrders(); openOrder(o.id); };
+  const reopen = () => { refreshView(); openOrder(o.id); };
+  if ($('#od-plan-save')) $('#od-plan-save').onclick = () => safe(async () => {
+    const day = $('#od-plan-day').value;
+    if (!day) { toast('请先选择计划上门日期', true); return; }
+    await api('set_plan', o.id, day, $('#od-plan-slot').value);
+    toast('计划上门已保存，排班表已更新'); reopen();
+  });
+  if ($('#od-plan-clear')) $('#od-plan-clear').onclick = () => safe(async () => {
+    await api('set_plan', o.id, '', ''); toast('已清除计划，工单回到待排期'); reopen();
+  });
   if ($('#od-assign')) $('#od-assign').onclick = () => assignDialog([o.id], reopen);
   if ($('#od-appt-save')) $('#od-appt-save').onclick = async () => {
     const v = $('#od-appt').value;
@@ -271,7 +306,8 @@ async function loadSchedule() {
       const shown = c.raw || '';
       const cls = c.state !== 'normal' ? c.state : (c.raw ? 'st-' + c.raw : 'st-blank');
       const tip = c.n ? `该时段已派 ${c.n} 单` + (c.state === 'conflict' ? `，但排班为「${c.raw}」` : '') + '\n' +
-        c.jobs.map(j => `${j.appointment ? j.appointment.slice(11) + ' ' : ''}${j.no || ''} ${j.customer || ''}${j.d365_status ? '（' + j.d365_status + '）' : ''}`).join('\n') : '';
+        c.jobs.map(j => `${j.visit ? (j.visit.time ? j.visit.time + ' ' : '') + j.visit.source + ' ' : ''}${j.no || ''} ${j.customer || ''}` +
+          `${j.d365_status ? '（' + j.d365_status + '）' : ''}${j.risk && j.risk.level ? ' ⚠' + j.risk.text : ''}`).join('\n') : '';
       return `<td class="cell ${cls} ${i ? 'pm' : ''}" data-e="${r.id}" data-d="${d}" data-s="${s}" title="${esc(tip)}">
         ${esc(shown)}${c.n ? `<span class="n">${c.n}</span>` : ''}</td>`;
     }).join('')).join('') + '</tr>').join('');
@@ -282,7 +318,26 @@ async function loadSchedule() {
     }).join('')).join('') + '</tr>').join('');
   $('#s-table').innerHTML = `<thead><tr><th class="name" rowspan="2">姓名</th><th class="type" rowspan="2">类型</th>${head1}</tr>
     <tr>${head2}</tr></thead><tbody>${body}</tbody><tfoot>${foot}</tfoot>`;
+  await loadPool();
 }
+
+// 待排期：定计划上门日期后进入排班表
+async function loadPool() {
+  const rows = await safe(() => api('unscheduled'));
+  if (!rows) return;
+  const slots = S.boot.slots.map(s => `<option>${s}</option>`).join('');
+  $('#s-pool').innerHTML = rows.length ? `<thead><tr><th>预约截止</th><th>超期</th><th style="width:290px">计划上门</th><th>服务订单号</th>
+    <th>Udesk 工单号</th><th>客户</th><th>工程师</th><th>D365 状态</th><th>问题</th></tr></thead><tbody>` + rows.map(o => `
+    <tr data-pool="${o.id}"><td class="nowrap">${deadlineHtml(o)}</td><td>${riskBadge(o.risk)}</td>
+      <td class="nowrap"><div class="row" style="flex-wrap:nowrap"><input type="date" data-pd value="${esc(S.boot.today)}" style="width:140px">
+        <select data-ps style="width:70px">${slots}</select><button class="primary" data-plan>排期</button></div></td>
+      <td class="mono nowrap click" data-order="${o.id}"><u>${esc(o.service_order_no)}</u></td><td class="mono nowrap">${esc(o.udesk_no)}</td>
+      <td>${esc(o.customer)}</td><td class="nowrap">${esc(o.engineer) || '<span class="muted">未派工</span>'}</td>
+      <td class="nowrap">${esc(o.d365_status)}</td><td class="wrap">${esc((o.problem || '').slice(0, 80))}</td></tr>`).join('') + '</tbody>'
+    : '<tr><td class="empty">没有待排期的工单 👍</td></tr>';
+}
+
+const refreshView = () => show(S.view);
 
 function cellMenu(td, x, y) {
   const m = $('#menu');
@@ -292,7 +347,8 @@ function cellMenu(td, x, y) {
   m.innerHTML = (jobs.length ? `<div class="menu-head">${esc(row.name)} ${esc(td.dataset.d.slice(5))} ${esc(td.dataset.s)} 的工单</div>` +
     jobs.map(j => `<button class="job-btn" ${j.order_id ? `data-order="${j.order_id}"` : 'disabled'}>
       <b class="mono">${esc(j.no || '无工单号')}</b> ${esc(j.customer || '')}
-      <span class="muted small">${esc(j.appointment ? j.appointment.slice(11) : '')} ${esc(j.d365_status || '')}</span></button>`).join('') +
+      <span class="muted small">${j.visit ? esc((j.visit.time ? j.visit.time + ' ' : '') + j.visit.source) : ''} ${esc(j.d365_status || '')}
+        ${j.risk && j.risk.level ? '· ⚠ ' + esc(j.risk.text) : ''}</span></button>`).join('') +
     '<div class="menu-head">改排班状态</div>' : '') + S.boot.statuses.map(s => `<button data-v="${s}"><span class="sw" style="background:var(${colors[s]})"></span>${s}</button>`).join('') +
     '<button data-v=""><span class="sw"></span>清空</button>';
   m.hidden = false;
@@ -312,8 +368,13 @@ async function loadToday() {
   const r = await safe(() => api('day_status', $('#t-day').value, $('#t-slot').value));
   if (!r) return;
   const k = (label, n, unit) => `<div class="kpi ${n === 0 ? 'z' : n === 1 ? 'o' : ''}"><span class="muted">${label}</span><b>${n}</b>${unit}</div>`;
+  const rs = await api('risk_summary').catch(() => ({overdue: 0, soon: 0, plan_late: 0, unscheduled: 0}));
+  const nRisk = rs.overdue + rs.soon + rs.plan_late;
   $('#t-kpis').innerHTML = k('外勤可派', r.field_available, '人') + k('驻点在岗', r.site_on_duty, '人') +
-    `<div class="kpi"><span class="muted">当天 D365 预约</span><b>${r.orders.length}</b>单</div>`;
+    `<div class="kpi"><span class="muted">当天上门</span><b>${r.orders.length}</b>单</div>
+     <div class="kpi click ${nRisk ? 'z' : ''}" data-goto="超期风险" title="点击查看"><span class="muted">⚠ 超期风险</span><b>${nRisk}</b>
+       单 <span class="muted small">已超期 ${rs.overdue} · 即将 ${rs.soon} · 计划晚 ${rs.plan_late}</span></div>
+     <div class="kpi click ${rs.unscheduled ? 'o' : ''}" data-goto="待排期" title="点击查看"><span class="muted">待排期</span><b>${rs.unscheduled}</b>单</div>`;
   $('#t-cards').innerHTML = r.rows.map(x => {
     const cls = x.status.startsWith('⚠') ? 'conflict' : x.slot_count ? 'dispatched' : 'st-' + x.schedule;
     return `<div class="eng-card">
@@ -323,16 +384,17 @@ async function loadToday() {
       ${x.jobs.length ? x.jobs.map(jobHtml).join('') : '<div class="muted small job-empty">当天没有工单</div>'}
     </div>`;
   }).join('');
-  $('#t-orders').innerHTML = r.orders.length ? `<thead><tr><th>预约上门</th><th>工程师</th><th>服务订单号</th><th>Udesk 工单号</th>
-    <th>客户</th><th>问题</th><th>D365 状态</th><th>设备地址</th></tr></thead><tbody>` + r.orders.map(o => `
-    <tr class="click" data-order="${o.id}"><td class="nowrap">${esc(o.appointment.slice(11))}</td>
+  $('#t-orders').innerHTML = r.orders.length ? `<thead><tr><th>上门</th><th>工程师</th><th>服务订单号</th><th>Udesk 工单号</th>
+    <th>客户</th><th>问题</th><th>D365 状态</th><th>预约截止</th><th>设备地址</th></tr></thead><tbody>` + r.orders.map(o => `
+    <tr class="click" data-order="${o.id}"><td class="nowrap">${esc(o.visit.time || o.visit.slot)}<span class="tag src-${esc(o.visit.source)}">${esc(o.visit.source)}</span></td>
       <td class="nowrap">${esc(o.engineer) || '<span class="muted">未派工</span>'}${o.local ? `<span class="tag">${esc(o.local)}</span>` : ''}</td>
       <td class="mono nowrap">${esc(o.service_order_no)}${o.order_type ? `<span class="tag">${esc(o.order_type)}</span>` : ''}</td>
       <td class="mono nowrap">${esc(o.udesk_no)}</td><td>${esc(o.customer)}</td>
       <td class="wrap">${esc((o.problem || '').slice(0, 100))}</td>
       <td><span class="badge b-${esc(o.status)}">${esc(o.d365_status || o.status)}</span></td>
+      <td class="nowrap">${deadlineHtml(o)}${riskBadge(o.risk)}</td>
       <td class="wrap">${esc(o.address)}</td></tr>`).join('') + '</tbody>'
-    : '<tr><td class="empty">这一天没有预约上门的 D365 工单</td></tr>';
+    : '<tr><td class="empty">这一天没有上门的工单（没定计划的单在「排班表」下方的待排期列表里）</td></tr>';
   await loadCreated();
 }
 
@@ -364,13 +426,14 @@ function jobHtml(j) {
   const no = j.service_order_no || j.order_no;
   return `<div class="job ${j.order_id ? 'click' : ''}" ${j.order_id ? `data-order="${j.order_id}"` : ''}>
     <div class="row"><span class="tag slot">${esc(j.slot)}</span>
-      ${j.appointment ? `<span class="small">${esc(j.appointment.slice(11))}</span>` : ''}
+      ${j.visit ? `<span class="small">${esc(j.visit.time)}</span><span class="tag src-${esc(j.visit.source)}">${esc(j.visit.source)}</span>` : ''}
       <b class="mono small">${esc(no) || '无工单号'}</b>${j.udesk_no ? `<span class="mono muted small">${esc(j.udesk_no)}</span>` : ''}
       ${j.d365_status ? `<span class="badge b-${esc(j.order_status)}" style="margin-left:auto">${esc(j.d365_status)}</span>`
         : `<span class="tag" style="margin-left:auto">${j.source === 'd365' ? 'D365' : '手工'}</span>`}</div>
     <div>${esc(j.customer)}</div>
     ${j.problem ? `<div class="muted small clip">${esc(j.problem)}</div>` : ''}
     ${j.address ? `<div class="muted small clip">📍 ${esc(j.address)}</div>` : ''}
+    ${j.appointment ? `<div class="small muted">考核截止 ${esc(j.appointment.slice(5))} ${riskBadge(j.risk)}</div>` : ''}
   </div>`;
 }
 
@@ -597,6 +660,23 @@ async function init() {
   $('#s-today').onclick = () => { $('#s-start').value = monday(S.boot.today); loadSchedule(); };
   $('#s-table').onclick = e => { const td = e.target.closest('td.cell'); if (td) { e.stopPropagation(); cellMenu(td, e.clientX, e.clientY); } };
   document.addEventListener('click', e => { if (!e.target.closest('#menu')) $('#menu').hidden = true; });
+  // 待排期：排期按钮
+  $('#s-pool').addEventListener('click', e => {
+    if (!e.target.matches('[data-plan]')) return;
+    const tr = e.target.closest('tr[data-pool]');
+    const day = $('[data-pd]', tr).value;
+    if (!day) { toast('请先选择日期', true); return; }
+    safe(async () => {
+      const o = await api('set_plan', +tr.dataset.pool, day, $('[data-ps]', tr).value);
+      toast(`${o.service_order_no} 已排到 ${day} ${o.planned_slot}${o.risk.level === 'plan_late' ? '（⚠ 晚于预约截止）' : ''}`);
+      loadSchedule();
+    });
+  });
+  // 今日查询的风险 / 待排期指标：点击跳到订单清单并筛选
+  $('#t-kpis').addEventListener('click', e => {
+    const k = e.target.closest('[data-goto]'); if (!k) return;
+    $('#o-status').value = k.dataset.goto; show('orders');
+  });
   // 今日查询 / 派单等处带 data-order 的工单，点击打开工单详情
   $('#main').addEventListener('click', e => {
     const el = e.target.closest('[data-order]');
@@ -627,7 +707,7 @@ async function init() {
   $('#r-clear').onclick = () => { $('#r-from').value = $('#r-to').value = ''; loadRecords(); };
   $('#r-table').onclick = async e => {
     const b = e.target.closest('[data-del]'); if (!b) return;
-    if (!await ask('删除这条派单记录？（排班表上的「外出」不会自动撤销）', '删除')) return;
+    if (!await ask('删除这条派单记录？（派单时自动标的「外出」会一起撤销，手工标的不动）', '删除')) return;
     safe(async () => { await api('delete_dispatch', +b.dataset.del); loadDispatch(); });
   };
 

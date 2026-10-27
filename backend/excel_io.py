@@ -132,14 +132,18 @@ def export_workbook(db: DB, start: str, days: int) -> bytes:
     ws = wb.active
     ws.title = "订单清单"
     cols = ["日期", "Udesk 工单号", "服务订单号", "借料单号", "客户", "机器序列号", "问题", "工程师", "状态",
-            "处理进度", "D365 状态", "订单类型", "预约上门", "出发", "到达", "现场完工", "设备地址", "联系人", "服务网点"]
+            "处理进度", "D365 状态", "订单类型", "预约上门（考核截止）", "计划上门", "出发", "到达", "现场完工",
+            "超期风险", "设备地址", "联系人", "服务网点"]
     _header(ws, cols)
+    s = db.settings()
     for o in db.q("SELECT * FROM orders ORDER BY day DESC, id DESC"):
+        logic.enrich(o, s)
+        plan = f"{o['planned_day']} {o['planned_slot']}".strip()
         ws.append([o["day"], o["udesk_no"], o["service_order_no"], o["loan_no"], o["customer"], o["serial"],
                    o["problem"], o["engineer"], o["status"], o["progress"], o["d365_status"], o["order_type"],
-                   o["appointment"], o["setoff_time"], o["arrival_time"], o["complete_time"], o["address"],
-                   o["contact"], o["network"]])
-    for i, w in enumerate([11, 12, 12, 10, 22, 18, 50, 16, 8, 30, 10, 8, 16, 16, 16, 16, 36, 24, 14], 1):
+                   o["appointment"], plan, o["setoff_time"], o["arrival_time"], o["complete_time"], o["risk"]["text"],
+                   o["address"], o["contact"], o["network"]])
+    for i, w in enumerate([11, 12, 12, 10, 22, 18, 50, 16, 8, 30, 10, 8, 18, 14, 16, 16, 16, 14, 36, 24, 14], 1):
         ws.column_dimensions[get_column_letter(i)].width = w
 
     ws = wb.create_sheet("排班表")
