@@ -123,6 +123,45 @@ CREATE TABLE IF NOT EXISTS orders (
     created_at TEXT DEFAULT (datetime('now', 'localtime')),
     updated_at TEXT DEFAULT (datetime('now', 'localtime'))
 );
+-- D365 服务配件（mcs_servicepart），只读同步
+CREATE TABLE IF NOT EXISTS parts (
+    id TEXT PRIMARY KEY,
+    order_d365_id TEXT NOT NULL,
+    part_no TEXT DEFAULT '',
+    name TEXT DEFAULT '',
+    quantity REAL DEFAULT 0,
+    confirm_qty REAL DEFAULT 0,
+    remaining_qty REAL DEFAULT 0,
+    is_charge INTEGER DEFAULT 0,
+    price REAL DEFAULT 0,
+    discount REAL DEFAULT 0,
+    total REAL DEFAULT 0,
+    total_text TEXT DEFAULT '',
+    material_id TEXT DEFAULT '',
+    material_code TEXT DEFAULT '',
+    created TEXT DEFAULT '',
+    modified TEXT DEFAULT ''
+);
+CREATE INDEX IF NOT EXISTS ix_parts_order ON parts(order_d365_id);
+-- D365 领料/借料/归还单（mcs_repairmaterialorder），只读同步
+CREATE TABLE IF NOT EXISTS material_orders (
+    id TEXT PRIMARY KEY,
+    order_d365_id TEXT NOT NULL,
+    code TEXT DEFAULT '',
+    type_code INTEGER,
+    type TEXT DEFAULT '',
+    status_code INTEGER,
+    status TEXT DEFAULT '',
+    return_code INTEGER,
+    return_status TEXT DEFAULT '',
+    shipment TEXT DEFAULT '',
+    borrow_id TEXT DEFAULT '',
+    borrow_code TEXT DEFAULT '',
+    reason TEXT DEFAULT '',
+    created TEXT DEFAULT '',
+    modified TEXT DEFAULT ''
+);
+CREATE INDEX IF NOT EXISTS ix_mat_order ON material_orders(order_d365_id);
 CREATE TABLE IF NOT EXISTS settings (
     key TEXT PRIMARY KEY,
     value TEXT NOT NULL

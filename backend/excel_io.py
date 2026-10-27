@@ -169,11 +169,6 @@ def export_workbook(db: DB, start: str, days: int) -> bytes:
         ws.append([label, ""] + [g["totals"].get(typ, {}).get(f"{d}|{s}", 0) for d in g["dates"] for s in SLOTS])
     ws.column_dimensions["A"].width = 14
 
-    ws = wb.create_sheet("派单记录")
-    _header(ws, ["日期", "工程师", "时段", "客户", "地址", "工单号", "预计时长(小时)", "来源", "排班表该时段状态", "检查"])
-    for d in logic.list_dispatches(db):
-        ws.append([d["day"], d["engineer"], d["slot"], d["customer"], d["address"], d["order_no"], d["hours"],
-                   "D365 预约" if d["source"] == "d365" else "手工", d["schedule"], d["check"]])
 
     ws = wb.create_sheet("人员")
     _header(ws, ["序号", "姓名", "类型", "联系电话", "备注", "D365 别名"])

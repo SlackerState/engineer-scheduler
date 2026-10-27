@@ -81,10 +81,25 @@ class D365:
         appid = self.get_settings().get("d365_appid") or ""
         self.browser.interactive_login(self.base, f"{self.base}/main.aspx" + (f"?appid={appid}" if appid else ""))
 
-    def record_url(self, rid: str) -> str:
+    def record_url(self, rid: str, entity: str = "mcs_serviceorder") -> str:
         appid = self.get_settings().get("d365_appid") or ""
         q = f"appid={appid}&" if appid else ""
-        return f"{self.base}/main.aspx?{q}pagetype=entityrecord&etn=mcs_serviceorder&id={rid}"
+        return f"{self.base}/main.aspx?{q}pagetype=entityrecord&etn={entity}&id={rid}"
+
+    # ---------- 配件（只读）：服务配件 + 领料/借料/归还单 ----------
+    def _by_orders(self, entity_set: str, select: list[str], lookup: str, order_ids: list[str]) -> list[dict]:
+        out = []
+        for i in range(0, len(order_ids), 15):
+            flt = " or ".join(f"{lookup} eq {x}" for x in order_ids[i:i + 15])
+            out += self.get_all(f"{entity_set}?$select={','.join(select)}&$filter={quote(flt)}")
+        return out
+
+    def parts_for(self, order_ids: list[str]) -> list[dict]:
+        return [normalize_part(r) for r in self._by_orders("mcs_serviceparts", PART_SELECT, "_mcs_serviceorder_value", order_ids)]
+
+    def materials_for(self, order_ids: list[str]) -> list[dict]:
+        return [normalize_material(r) for r in
+                self._by_orders("mcs_repairmaterialorders", MATERIAL_SELECT, "_mcs_serviceorderid_value", order_ids)]
 
     def _query(self, flt: str, order: str = "createdon desc") -> list[dict]:
         sel = ",".join(SELECT)
@@ -159,6 +174,50 @@ class D365:
             body["mcs_appointmenttimechangenumber"] = int(cur.get("mcs_appointmenttimechangenumber") or 0) + 1
         self.browser.fetch_json(self.base, self._api(f"{ENTITY_SET}({rid})"), method="PATCH", body=body,
                                 headers={"If-Match": "*"})
+
+
+PART_SELECT = [
+    "mcs_servicepartid", "_mcs_serviceorder_value", "_mcs_part_value", "mcs_partfullname", "mcs_quantity",
+    "mcs_confirmquantity", "mcs_remainingquantity", "mcs_ischarge", "mcs_price", "mcs_discount", "mcs_totalamount",
+    "_mcs_repairmaterialorderid_value", "createdon", "modifiedon",
+]
+MATERIAL_SELECT = [
+    "mcs_repairmaterialorderid", "_mcs_serviceorderid_value", "mcs_code", "mcs_type", "mcs_orderstatus",
+    "mcs_returnmaterialstatus", "mcs_shipmentstatus", "_mcs_borroworder_value", "mcs_orderreason",
+    "createdon", "modifiedon",
+]
+# mcs_repairmaterialorder.mcs_type：10 向事业部领料 · 20 向子公司借料 · 30 归还单 · 40 向子公司领料 · 50 向寄售库领料
+MAT_BORROW, MAT_RETURN = 20, 30
+
+
+def _fv(rec: dict, k: str):
+    return rec.get(k + FV) or (rec.get(k) if rec.get(k) is not None else "")
+
+
+def normalize_part(r: dict) -> dict:
+    return {
+        "id": r["mcs_servicepartid"], "order_d365_id": r.get("_mcs_serviceorder_value") or "",
+        "part_no": _fv(r, "_mcs_part_value"), "name": r.get("mcs_partfullname") or "",
+        "quantity": r.get("mcs_quantity") or 0, "confirm_qty": r.get("mcs_confirmquantity") or 0,
+        "remaining_qty": r.get("mcs_remainingquantity") or 0, "is_charge": int(bool(r.get("mcs_ischarge"))),
+        "price": r.get("mcs_price") or 0, "discount": r.get("mcs_discount") or 0,
+        "total": r.get("mcs_totalamount") or 0, "total_text": str(_fv(r, "mcs_totalamount")),
+        "material_id": r.get("_mcs_repairmaterialorderid_value") or "",
+        "material_code": _fv(r, "_mcs_repairmaterialorderid_value"),
+        "created": to_local(r.get("createdon")), "modified": to_local(r.get("modifiedon")),
+    }
+
+
+def normalize_material(r: dict) -> dict:
+    return {
+        "id": r["mcs_repairmaterialorderid"], "order_d365_id": r.get("_mcs_serviceorderid_value") or "",
+        "code": r.get("mcs_code") or "", "type_code": r.get("mcs_type"), "type": _fv(r, "mcs_type"),
+        "status_code": r.get("mcs_orderstatus"), "status": _fv(r, "mcs_orderstatus"),
+        "return_code": r.get("mcs_returnmaterialstatus"), "return_status": _fv(r, "mcs_returnmaterialstatus"),
+        "shipment": _fv(r, "mcs_shipmentstatus"), "borrow_id": r.get("_mcs_borroworder_value") or "",
+        "borrow_code": _fv(r, "_mcs_borroworder_value"), "reason": _fv(r, "mcs_orderreason"),
+        "created": to_local(r.get("createdon")), "modified": to_local(r.get("modifiedon")),
+    }
 
 
 def normalize(rec: dict) -> dict:

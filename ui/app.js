@@ -57,8 +57,6 @@ const S = {boot: null, engineers: [], view: 'orders'};
 
 async function refreshEngineers() {
   S.engineers = await api('list_engineers');
-  const opts = S.engineers.map(e => `<option value="${e.id}">${esc(e.name)}（${esc(e.type)}）</option>`).join('');
-  $('#d-eng').innerHTML = '<option value="">请选择</option>' + opts;
   const cur = $('#o-eng').value;
   $('#o-eng').innerHTML = '<option value="">全部工程师</option>' +
     S.engineers.map(e => `<option>${esc(e.name)}</option>`).join('');
@@ -69,7 +67,7 @@ function show(view) {
   S.view = view;
   $$('#nav a').forEach(a => a.classList.toggle('on', a.dataset.view === view));
   $$('.view').forEach(v => v.classList.toggle('on', v.id === 'v-' + view));
-  ({orders: loadOrders, schedule: loadSchedule, today: loadToday, dispatch: loadDispatch,
+  ({orders: loadOrders, schedule: loadSchedule, today: loadToday, parts: loadParts,
     people: loadPeople, settings: loadSettings})[view]();
 }
 
@@ -98,7 +96,8 @@ async function loadOrders() {
       <td><span class="badge b-${esc(o.status)}">${esc(o.status)}</span></td>
       <td class="nowrap">${esc(o.d365_status)}</td>
       <td class="nowrap">${visitText(o.visit) || (o.d365_id && !['已完成', '已取消'].includes(o.status) ? '<span class="badge risk-pool">待排期</span>' : '')}</td>
-      <td class="nowrap">${deadlineHtml(o)}</td><td>${riskBadge(o.risk)}</td>
+      <td class="nowrap">${deadlineHtml(o)}</td>
+      <td>${riskBadge(o.risk)}${o.to_return ? `<span class="badge st-todo">待归还配件 ${o.to_return}</span>` : ''}</td>
       <td class="wrap">${esc(o.progress)}</td></tr>`).join('') + '</tbody>';
 }
 
@@ -204,7 +203,7 @@ async function openOrder(id) {
     <h2>${o.id ? '订单 ' + esc(o.service_order_no || o.udesk_no || '#' + o.id) : '手工新增订单'}
       ${o.d365_link ? '<button class="link" id="od-open">在 D365 打开 ↗</button>' : ''}
       <button class="x" id="od-close">关闭</button></h2>
-    ${fromD365 ? d365ActionsHtml(o) + visitPlanHtml(o) : ''}
+    ${fromD365 ? d365ActionsHtml(o) + visitPlanHtml(o) + '<div class="card act parts"><b>配件</b><div id="od-parts"></div></div>' : ''}
     <div class="sec">${fromD365 ? '本地记录 <span class="muted small">（只保存在软件里，不写回 D365）</span>' : '订单信息'}</div>
     <form class="form" id="od-form" style="display:grid;gap:10px">
       <div class="two"><label>日期<input name="day" type="date" value="${esc(o.day)}"></label>
@@ -224,6 +223,7 @@ async function openOrder(id) {
   d.hidden = false;
   $('#od-close').onclick = () => (d.hidden = true);
   if ($('#od-open')) $('#od-open').onclick = () => api('open_url', o.d365_link);
+  if (fromD365) loadOrderParts(o.id);
   const reopen = () => { refreshView(); openOrder(o.id); };
   if ($('#od-plan-save')) $('#od-plan-save').onclick = () => safe(async () => {
     const day = $('#od-plan-day').value;
@@ -374,7 +374,8 @@ async function loadToday() {
     `<div class="kpi"><span class="muted">当天上门</span><b>${r.orders.length}</b>单</div>
      <div class="kpi click ${nRisk ? 'z' : ''}" data-goto="超期风险" title="点击查看"><span class="muted">⚠ 超期风险</span><b>${nRisk}</b>
        单 <span class="muted small">已超期 ${rs.overdue} · 即将 ${rs.soon} · 计划晚 ${rs.plan_late}</span></div>
-     <div class="kpi click ${rs.unscheduled ? 'o' : ''}" data-goto="待排期" title="点击查看"><span class="muted">待排期</span><b>${rs.unscheduled}</b>单</div>`;
+     <div class="kpi click ${rs.unscheduled ? 'o' : ''}" data-goto="待排期" title="点击查看"><span class="muted">待排期</span><b>${rs.unscheduled}</b>单</div>
+     <div class="kpi click ${rs.to_return ? 'o' : ''}" data-goto-parts="1" title="点击查看"><span class="muted">待归还借料</span><b>${rs.to_return}</b>张</div>`;
   $('#t-cards').innerHTML = r.rows.map(x => {
     const cls = x.status.startsWith('⚠') ? 'conflict' : x.slot_count ? 'dispatched' : 'st-' + x.schedule;
     return `<div class="eng-card">
@@ -437,57 +438,87 @@ function jobHtml(j) {
   </div>`;
 }
 
-// ======================= 派单 =======================
-function formData() { return Object.fromEntries(new FormData($('#d-form'))); }
+// ======================= 配件（只读，来自 D365） =======================
+const BORROW_STATES = ['需处理', '待归还', '归还被拒', '审批通过待退', '归还审批中', '借用中', '已用完', '已归还', ''];
+const stateBadge = s => `<span class="badge bs-${esc(s)}">${esc(s)}</span>`;
+const money = (v, cur) => `${esc(cur || '')}${Number(v || 0).toFixed(2)}`;
+const qty = v => Number(v || 0) % 1 ? Number(v).toFixed(2) : String(Number(v || 0));
 
-async function refreshDispatchCheck() {
-  const f = formData();
-  const [chk, people] = await Promise.all([api('check_dispatch', f), f.day ? api('day_status', f.day, f.slot) : null]);
-  const missing = chk.missing.length ? `<span class="bad">⚠ 还需填写：${chk.missing.join('、')}</span>` : '<span class="ok">✓ 必填项已填齐</span>';
-  $('#d-check').innerHTML = `${missing}<br>排班表该时段状态：${esc(chk.schedule || '—')}<br>该时段已派单数：${f.engineer_id ? chk.slot_count : '—'}<br>
-    结果：<span class="${chk.ok ? 'ok' : 'bad'}">${esc(chk.message)}</span>`;
-  if (people) $('#d-people').innerHTML = '<thead><tr><th>姓名</th><th>类型</th><th>状态</th><th>该时段派单数</th></tr></thead><tbody>' +
-    people.rows.map(x => `<tr><td>${esc(x.name)}</td><td>${esc(x.type)}</td>
-      <td><span class="badge ${x.status.startsWith('⚠') ? 'conflict' : x.slot_count ? 'dispatched' : 'st-' + x.schedule}">${esc(x.status)}</span></td>
-      <td>${x.slot_count}</td></tr>`).join('') + '</tbody>';
+async function loadParts() {
+  S.partsTab = S.partsTab || 'borrow';
+  $$('#p-tabs [data-tab]').forEach(b => b.classList.toggle('on', b.dataset.tab === S.partsTab));
+  $('#p-borrow').hidden = S.partsTab !== 'borrow';
+  $('#p-charge').hidden = S.partsTab !== 'charge';
+  if (S.partsTab === 'borrow') return loadBorrows();
+  const cur = $('#c2-eng').value;
+  $('#c2-eng').innerHTML = '<option value="">全部工程师</option>' + S.engineers.map(e => `<option>${esc(e.name)}</option>`).join('');
+  $('#c2-eng').value = cur;
+  return loadCharges();
 }
 
-async function loadDispatch() {
-  const f = $('#d-form');
-  if (!f.day.value) f.day.value = S.boot.today;
-  if (!f.dataset.init) { f.slot.value = S.boot.slot_now; f.dataset.init = 1; }
-  await refreshDispatchCheck();
-  await loadRecords();
-}
-
-async function loadRecords() {
-  const rows = await safe(() => api('list_dispatches', $('#r-from').value, $('#r-to').value));
-  if (!rows) return;
-  $('#r-table').innerHTML = rows.length ? `<thead><tr><th>日期</th><th>工程师</th><th>时段</th><th>客户</th><th>地址</th><th>工单号</th>
-    <th>预计时长</th><th>来源</th><th>排班表该时段状态</th><th>检查</th><th></th></tr></thead><tbody>` + rows.map(d => `<tr>
-    <td class="nowrap">${esc(d.day)}</td><td>${esc(d.engineer)}</td><td>${esc(d.slot)}</td><td>${esc(d.customer)}</td>
-    <td class="wrap">${esc(d.address)}</td><td class="mono">${esc(d.order_no)}</td><td>${d.hours ?? ''}</td>
-    <td>${d.source === 'd365' ? '<span class="tag">D365 预约</span>' : '<span class="tag">手工</span>'}</td>
-    <td>${esc(d.schedule)}</td><td class="${d.check === '✓' ? '' : 'conflict'}">${esc(d.check)}</td>
-    <td><button class="link danger" data-del="${d.id}">删除</button></td></tr>`).join('') + '</tbody>'
-    : '<tr><td class="empty">没有派单记录</td></tr>';
-}
-
-async function submitDispatch(e) {
-  e.preventDefault();
-  const f = formData();
-  let r = await safe(() => api('submit_dispatch', f, false));
+async function loadBorrows() {
+  S.borrowState = S.borrowState ?? '需处理';
+  const r = await safe(() => api('parts_borrows', S.borrowState));
   if (!r) return;
-  if (r.need_confirm) {
-    if (!await ask(r.message, '仍然提交')) return;
-    r = await safe(() => api('submit_dispatch', f, true));
-    if (!r) return;
-  }
-  if (!r.ok) { toast(r.message, true); return; }
-  toast(r.message);
-  ['customer', 'address', 'order_no', 'hours'].forEach(k => ($('#d-form')[k].value = ''));
-  $('#d-form').engineer_id.value = '';
-  loadDispatch();
+  const todo = (r.counts['待归还'] || 0) + (r.counts['归还被拒'] || 0);
+  $('#b-chips').innerHTML = BORROW_STATES.map(s => {
+    const n = s === '需处理' ? todo : s ? (r.counts[s] || 0) : Object.values(r.counts).reduce((a, b) => a + b, 0);
+    return `<button class="chip ${s === S.borrowState ? 'on' : ''}" data-state="${esc(s)}">${esc(s || '全部')} <b>${n}</b></button>`;
+  }).join('');
+  $('#b-table').innerHTML = r.rows.length ? `<thead><tr><th>状态</th><th>借料单</th><th>服务订单号</th><th>客户</th><th>工程师</th>
+    <th>借料时间</th><th>配件（剩余 / 借出）</th><th>归还单</th><th>工单状态</th></tr></thead><tbody>` + r.rows.map(b => `
+    <tr class="click" ${b.order_id ? `data-order="${b.order_id}"` : ''}>
+      <td>${stateBadge(b.state)}</td>
+      <td class="mono nowrap"><a class="lnk" data-link="${esc(b.d365_link)}">${esc(b.code)} ↗</a><div class="muted small">${esc(b.status)}</div></td>
+      <td class="mono nowrap">${esc(b.service_order_no || '')}<div class="muted small">${esc(b.udesk_no || '')}</div></td>
+      <td>${esc(b.customer || '')}</td><td class="nowrap">${esc(b.engineer || '')}</td>
+      <td class="nowrap">${esc((b.created || '').slice(0, 10))}${b.days != null ? `<div class="muted small">${b.days} 天前</div>` : ''}</td>
+      <td class="wrap">${b.parts.map(p => `<div><span class="mono small">${esc(p.part_no)}</span> ${esc(p.name)}
+        <b class="${p.remaining_qty > 0 ? 'warn' : 'muted'}">${qty(p.remaining_qty)}</b> / ${qty(p.quantity)}</div>`).join('') || '<span class="muted">—</span>'}</td>
+      <td class="nowrap">${b.returns.map(x => `<div class="mono small">${esc(x.code)} <span class="muted">${esc(x.status)}</span></div>`).join('') || '<span class="muted">—</span>'}</td>
+      <td class="nowrap">${esc(b.d365_status || b.order_status || '')}</td></tr>`).join('') + '</tbody>'
+    : `<tr><td class="empty">${S.borrowState === '需处理' ? '没有需要处理的借料单 👍' : '没有记录'}（点左下「同步 D365」可刷新）</td></tr>`;
+}
+
+async function loadCharges() {
+  const r = await safe(() => api('parts_charges', $('#c2-from').value, $('#c2-to').value, $('#c2-eng').value, $('#c2-only').checked));
+  if (!r) return;
+  $('#c2-kpis').innerHTML = `<div class="kpi"><span class="muted">收费金额合计</span><b>${money(r.total, r.currency)}</b></div>
+    <div class="kpi"><span class="muted">涉及工单</span><b>${r.orders}</b>单</div>
+    <div class="kpi"><span class="muted">配件行数</span><b>${r.rows.length}</b>行</div>`;
+  $('#c2-table').innerHTML = r.rows.length ? `<thead><tr><th>工单日期</th><th>服务订单号</th><th>客户</th><th>工程师</th><th>配件号</th><th>名称</th>
+    <th>数量</th><th>剩余</th><th>单价</th><th>折扣</th><th>金额</th><th>收费</th><th>借料单</th></tr></thead><tbody>` + r.rows.map(p => `
+    <tr class="click" ${p.order_id ? `data-order="${p.order_id}"` : ''}>
+      <td class="nowrap">${esc(p.day || '')}</td><td class="mono nowrap">${esc(p.service_order_no || '')}</td><td>${esc(p.customer || '')}</td>
+      <td class="nowrap">${esc(p.engineer || '')}</td><td class="mono nowrap">${esc(p.part_no)}</td><td>${esc(p.name)}</td>
+      <td>${qty(p.quantity)}</td><td>${qty(p.remaining_qty)}</td><td class="nowrap">${money(p.price, r.currency)}</td>
+      <td>${qty(p.discount)}%</td><td class="nowrap"><b>${esc(p.total_text || money(p.total, r.currency))}</b></td>
+      <td>${p.is_charge ? '<span class="badge b-处理中">收费</span>' : '<span class="muted">否</span>'}</td>
+      <td class="mono nowrap">${esc(p.material_code || '')}</td></tr>`).join('') + '</tbody>'
+    : '<tr><td class="empty">这段时间没有配件记录</td></tr>';
+}
+
+// 工单详情里的配件部分
+async function loadOrderParts(oid, refresh) {
+  const box = $('#od-parts'); if (!box) return;
+  box.innerHTML = `<div class="muted small">${refresh ? '正在从 D365 读取…' : '读取中…'}</div>`;
+  const r = await safe(() => api(refresh ? 'refresh_order_parts' : 'order_parts', oid));
+  if (!r) { box.innerHTML = ''; return; }
+  const charged = r.parts.filter(p => p.is_charge);
+  box.innerHTML = `
+    <div class="row"><span class="muted small">共 ${r.parts.length} 个配件 · 收费 ${charged.length} 个，合计 <b>${money(r.charge_total, r.currency)}</b></span>
+      <button class="link" id="od-parts-refresh" style="margin-left:auto">从 D365 刷新</button></div>
+    ${r.parts.length ? `<table class="grid compact"><thead><tr><th>配件</th><th>数量</th><th>剩余</th><th>收费</th><th>金额</th><th>借料单</th></tr></thead><tbody>` +
+      r.parts.map(p => `<tr><td><span class="mono small">${esc(p.part_no)}</span><div>${esc(p.name)}</div></td><td>${qty(p.quantity)}</td>
+        <td class="${p.remaining_qty > 0 ? 'warn' : ''}">${qty(p.remaining_qty)}</td>
+        <td>${p.is_charge ? '<span class="badge b-处理中">收费</span>' : '<span class="muted">否</span>'}</td>
+        <td class="nowrap">${esc(p.total_text)}</td><td class="mono small">${esc(p.material_code)}</td></tr>`).join('') + '</tbody></table>'
+      : '<div class="muted small">这单没有配件（或还没同步）</div>'}
+    ${r.borrows.length ? '<div class="sec small">借料归还</div>' + r.borrows.map(b => `<div class="row">${stateBadge(b.state)}
+      <a class="lnk mono" data-open="${esc((r.materials.find(m => m.id === b.id) || {}).d365_link || '')}">${esc(b.code)} ↗</a>
+      <span class="muted small">剩余 ${qty(b.remaining)} 件 · ${esc(b.return_status || '')}${b.returns.length ? ' · 归还单 ' + b.returns.map(x => esc(x.code) + '（' + esc(x.status) + '）').join('、') : ''}</span></div>`).join('') : ''}`;
+  $('#od-parts-refresh').onclick = () => loadOrderParts(oid, true);
+  $$('[data-open]', box).forEach(a => (a.onclick = () => a.dataset.open && api('open_url', a.dataset.open)));
 }
 
 // ======================= 人员 =======================
@@ -674,9 +705,18 @@ async function init() {
   });
   // 今日查询的风险 / 待排期指标：点击跳到订单清单并筛选
   $('#t-kpis').addEventListener('click', e => {
+    if (e.target.closest('[data-goto-parts]')) { S.borrowState = '需处理'; S.partsTab = 'borrow'; show('parts'); return; }
     const k = e.target.closest('[data-goto]'); if (!k) return;
     $('#o-status').value = k.dataset.goto; show('orders');
   });
+  // 配件页
+  $('#p-tabs').onclick = e => { const b = e.target.closest('[data-tab]'); if (b) { S.partsTab = b.dataset.tab; loadParts(); } };
+  $('#b-chips').onclick = e => { const c = e.target.closest('[data-state]'); if (c) { S.borrowState = c.dataset.state; loadBorrows(); } };
+  ['#c2-from', '#c2-to', '#c2-eng', '#c2-only'].forEach(s => ($(s).onchange = loadCharges));
+  $('#c2-from').value = addDays(S.boot.today, -30);
+  $('#v-parts').addEventListener('click', e => {
+    const l = e.target.closest('[data-link]'); if (l) { e.stopPropagation(); api('open_url', l.dataset.link); }
+  }, true);
   // 今日查询 / 派单等处带 data-order 的工单，点击打开工单详情
   $('#main').addEventListener('click', e => {
     const el = e.target.closest('[data-order]');
@@ -696,19 +736,6 @@ async function init() {
     if (!await safe(() => api('sync_since', $('#c-from').value))) { toast('正在同步中，请稍候'); return; }
     S.wasRunning = true;
     updateSyncState();
-  };
-
-  // 派单
-  $('#d-form').onchange = refreshDispatchCheck;
-  $('#d-form').oninput = e => { if (e.target.name !== 'day') refreshDispatchCheck(); };
-  $('#d-form').onsubmit = submitDispatch;
-  $('#r-from').onchange = loadRecords;
-  $('#r-to').onchange = loadRecords;
-  $('#r-clear').onclick = () => { $('#r-from').value = $('#r-to').value = ''; loadRecords(); };
-  $('#r-table').onclick = async e => {
-    const b = e.target.closest('[data-del]'); if (!b) return;
-    if (!await ask('删除这条派单记录？（派单时自动标的「外出」会一起撤销，手工标的不动）', '删除')) return;
-    safe(async () => { await api('delete_dispatch', +b.dataset.del); loadDispatch(); });
   };
 
   // 人员
@@ -742,7 +769,7 @@ async function init() {
     rd.onload = () => safe(async () => {
       $('#x-msg').textContent = '导入中…';
       const r = await api('import_excel', rd.result.split(',')[1]);
-      $('#x-msg').textContent = `导入完成：人员 ${r.engineers}，排班格子 ${r.schedule}，派单记录 ${r.dispatches}，订单 ${r.orders}`;
+      $('#x-msg').textContent = `导入完成：人员 ${r.engineers}，排班格子 ${r.schedule}，订单 ${r.orders}`;
       await refreshEngineers();
       e.target.value = '';
     });

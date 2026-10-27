@@ -98,6 +98,7 @@ class Syncer:
             recs += self.d365.by_ids(pending)
         new = upd = skipped = 0
         engineers = self.db.engineers()
+        synced_ids = []
         for rec in recs:
             row = normalize(rec)
             if network and row["network"] and row["network"] != network:
@@ -106,13 +107,40 @@ class Syncer:
             created = self.upsert(row, s)
             new += created
             upd += not created
+            synced_ids.append(row["d365_id"])
             if s.get("d365_to_dispatch", True):
                 self.sync_dispatch(row, engineers)
-        self.d365.browser.save_state()
         msg = f"同步完成：新增 {new} 单，更新 {upd} 单"
         if skipped:
             msg += f"，跳过其它网点 {skipped} 单"
+        try:
+            n_parts, n_mats = self.sync_parts(synced_ids)
+            msg += f"；配件 {n_parts} 条、借料/归还单 {n_mats} 张"
+        except NeedLogin:
+            raise
+        except Exception as e:  # noqa: BLE001 - 配件同步失败不影响工单同步
+            self._log(f"配件同步失败：{e}")
+            msg += "；配件同步失败（见同步日志）"
+        self.d365.browser.save_state()
         return msg
+
+    def sync_parts(self, order_ids: list[str]) -> tuple[int, int]:
+        """拉取这些工单的服务配件和领料/借料/归还单，整单替换本地记录（D365 里删掉的也会消失）。"""
+        if not order_ids:
+            return 0, 0
+        parts = self.d365.parts_for(order_ids)
+        mats = self.d365.materials_for(order_ids)
+        with self.db.lock:
+            marks = ",".join("?" * len(order_ids))
+            self.db.conn.execute(f"DELETE FROM parts WHERE order_d365_id IN ({marks})", order_ids)
+            self.db.conn.execute(f"DELETE FROM material_orders WHERE order_d365_id IN ({marks})", order_ids)
+            for table, rows in (("parts", parts), ("material_orders", mats)):
+                for r in rows:
+                    cols = list(r)
+                    self.db.conn.execute(f"INSERT OR REPLACE INTO {table}({','.join(cols)}) "
+                                         f"VALUES({','.join('?' * len(cols))})", [r[c] for c in cols])
+            self.db.conn.commit()
+        return len(parts), len(mats)
 
     def upsert(self, row: dict, s: dict) -> bool:
         now = datetime.now().strftime("%Y-%m-%d %H:%M")

@@ -14,7 +14,7 @@
     <a data-view="orders" class="on">订单清单</a>
     <a data-view="schedule">排班表</a>
     <a data-view="today">今日查询</a>
-    <a data-view="dispatch">派单</a>
+    <a data-view="parts">配件</a>
     <a data-view="people">人员</a>
     <a data-view="settings">设置</a>
   </nav>
@@ -32,6 +32,7 @@
     <div class="tools">
       <select id="o-status">
         <option value="未完成">未完成</option><option value="超期风险">⚠ 超期风险</option><option value="待排期">待排期</option>
+        <option value="待归还配件">待归还配件</option>
         <option value="">全部</option>
         <option>待处理</option><option>处理中</option><option>已完成</option><option>已取消</option>
       </select>
@@ -100,34 +101,25 @@
   <div class="table-wrap"><table class="grid" id="c-table"></table></div>
 </section>
 
-<section id="v-dispatch" class="view">
-  <header class="bar"><h1>派单</h1></header>
-  <div class="split">
-    <form id="d-form" class="card form" autocomplete="off">
-      <h2>派单录入</h2>
-      <label>日期<input name="day" type="date" required></label>
-      <label>时段<select name="slot"><option>上午</option><option>下午</option></select></label>
-      <label>工程师<select name="engineer_id" id="d-eng"></select></label>
-      <label>客户<input name="customer"></label>
-      <label>地址<input name="address"></label>
-      <label>工单号<input name="order_no"></label>
-      <label>预计时长(小时)<input name="hours" type="number" min="0" step="0.5"></label>
-      <div id="d-check" class="check"></div>
-      <button class="primary" type="submit">提交派单</button>
-    </form>
-    <div class="card">
-      <h2>该时段人员状态</h2>
-      <table class="grid compact" id="d-people"></table>
-    </div>
-  </div>
-  <header class="bar sub">
-    <h2>派单记录</h2>
-    <div class="tools">
-      <input id="r-from" type="date"> 至 <input id="r-to" type="date">
-      <button id="r-clear">全部</button>
-    </div>
+<section id="v-parts" class="view">
+  <header class="bar">
+    <h1>配件</h1>
+    <div class="seg" id="p-tabs"><button data-tab="borrow" class="on">借料归还</button><button data-tab="charge">收费配件</button></div>
+    <span class="muted small">数据来自 D365（只读，随「同步 D365」更新）；要改请点单据号到 D365 里操作</span>
   </header>
-  <div class="table-wrap"><table class="grid" id="r-table"></table></div>
+  <div id="p-borrow">
+    <div class="row chips" id="b-chips"></div>
+    <div class="table-wrap"><table class="grid" id="b-table"></table></div>
+  </div>
+  <div id="p-charge" hidden>
+    <div class="row" style="margin-bottom:10px">
+      <label class="muted">工单创建日期 <input id="c2-from" type="date"></label> 至 <input id="c2-to" type="date">
+      <select id="c2-eng"><option value="">全部工程师</option></select>
+      <label class="chk"><input id="c2-only" type="checkbox" checked> 只看收费配件</label>
+    </div>
+    <div class="kpis" id="c2-kpis"></div>
+    <div class="table-wrap"><table class="grid" id="c2-table"></table></div>
+  </div>
 </section>
 
 <section id="v-people" class="view">
@@ -160,7 +152,7 @@
       <label>只同步该服务网点（留空 = 全部）<input name="network_filter"></label>
       <label>同步最近多少天创建的订单<input name="lookback_days" type="number" min="1"></label>
       <label class="chk"><input name="d365_status_overrides_local" type="checkbox"> 用 D365 订单状态更新本地状态</label>
-      <label class="chk"><input name="d365_to_dispatch" type="checkbox"> 把 D365「预约上门时间」自动写入派单记录和排班表</label>
+      <label class="chk"><input name="d365_to_dispatch" type="checkbox"> 把 D365 工单按上门时间自动排进排班表</label>
       <label class="chk"><input name="auto_sync" type="checkbox"> 自动同步</label>
       <label>自动同步间隔（分钟）<input name="sync_interval_min" type="number" min="1"></label>
       <label>上午/下午分界（几点算下午）<input name="noon_hour" type="number" min="0" max="23"></label>
@@ -180,7 +172,7 @@
     </div>
     <div class="card form">
       <h2>Excel</h2>
-      <p class="muted">导入原来的「工程师排班表.xlsm」：人员、排班表、派单记录、订单清单都会导入，重复记录自动跳过。</p>
+      <p class="muted">导入原来的「工程师排班表.xlsm」：人员、排班表、订单清单都会导入，重复记录自动跳过。</p>
       <div class="row">
         <label class="btn">导入 Excel<input id="x-file" type="file" accept=".xlsx,.xlsm" hidden></label>
         <button id="x-export">导出 Excel</button>

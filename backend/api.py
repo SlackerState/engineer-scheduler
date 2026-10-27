@@ -7,7 +7,7 @@ import threading
 import webbrowser
 from datetime import date, datetime, timedelta
 
-from . import excel_io, logic
+from . import excel_io, logic, parts
 from .browser import Browser, NeedLogin
 from .d365 import D365, normalize
 from .db import DB, ORDER_EDITABLE, ORDER_STATUSES, SLOTS, STATUSES, app_dir
@@ -136,7 +136,7 @@ class Api:
         sql, p = "SELECT * FROM orders WHERE 1=1", []
         if status in ("未完成", "超期风险", "待排期"):
             sql += " AND status NOT IN ('已完成','已取消')"
-        elif status:
+        elif status and status != "待归还配件":
             sql += " AND status=?"
             p.append(status)
         if engineer:
@@ -148,6 +148,11 @@ class Api:
             p += [f"%{keyword}%"] * 7
         sql += " ORDER BY day DESC, id DESC"
         rows = self._enrich(self._db.q(sql, p))
+        todo = parts.to_return_by_order(self._db)
+        for r in rows:
+            r["to_return"] = todo.get(r["d365_id"], 0)
+        if status == "待归还配件":
+            rows = [r for r in rows if r["to_return"]]
         if status == "超期风险":
             rows = [r for r in rows if r["risk"]["level"] in RISK_OPEN]
             rows.sort(key=lambda r: r["appointment"])
@@ -173,7 +178,48 @@ class Api:
         rows = self.list_orders("未完成")
         count = lambda lv: sum(1 for r in rows if r["risk"]["level"] == lv)  # noqa: E731
         return {"overdue": count("overdue"), "soon": count("soon"), "plan_late": count("plan_late"),
-                "unscheduled": sum(1 for r in rows if r["d365_id"] and not r["visit"])}
+                "unscheduled": sum(1 for r in rows if r["d365_id"] and not r["visit"]),
+                "to_return": sum(parts.to_return_by_order(self._db).values())}
+
+    # ---------- 配件（只读，来自 D365） ----------
+    def _mat_link(self, rows: list[dict], key: str = "id"):
+        for r in rows:
+            if r.get(key):
+                r["d365_link"] = self._d365.record_url(r[key], "mcs_repairmaterialorder")
+        return rows
+
+    def parts_borrows(self, state=""):
+        rows = parts.borrows(self._db)
+        counts: dict = {}
+        for r in rows:
+            counts[r["state"]] = counts.get(r["state"], 0) + 1
+        if state == "需处理":
+            rows = [r for r in rows if r["state"] in parts.TODO]
+        elif state:
+            rows = [r for r in rows if r["state"] == state]
+        order = {"归还被拒": 0, "待归还": 1, "审批通过待退": 2, "归还审批中": 3, "借用中": 4, "已用完": 5, "已归还": 6}
+        rows.sort(key=lambda r: (order.get(r["state"], 9), r["created"]))
+        return {"rows": self._mat_link(rows), "counts": counts}
+
+    def parts_charges(self, day_from="", day_to="", engineer="", only_charge=True):
+        return parts.charges(self._db, day_from, day_to, engineer, bool(only_charge))
+
+    def order_parts(self, oid):
+        o = self._db.one("SELECT d365_id FROM orders WHERE id=?", (int(oid),))
+        if not o or not o["d365_id"]:
+            return {"parts": [], "materials": [], "borrows": [], "charge_total": 0, "currency": ""}
+        res = parts.order_parts(self._db, o["d365_id"])
+        self._mat_link(res["materials"])
+        return res
+
+    def refresh_order_parts(self, oid):
+        """从 D365 重新读取这一单的配件和借料/归还单。"""
+        o = self._d365_order(oid)
+        try:
+            self._sync.sync_parts([o["d365_id"]])
+        except NeedLogin as e:
+            raise RuntimeError(f"{e}，请先点「同步 D365」登录") from e
+        return self.order_parts(oid)
 
     def orders_since(self, day, status=""):
         """创建日期在 day 及之后的工单，按创建时间倒序。"""
