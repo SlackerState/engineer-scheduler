@@ -112,6 +112,11 @@ class Api:
             raise ValueError(f"未知状态：{status}")
         self._db.set_cell(int(eid), day, slot, status)
 
+    def set_day(self, eid, day, status):
+        """排班表按整天改：上午下午一起设。"""
+        for slot in SLOTS:
+            self.set_cell(eid, day, slot, status)
+
     def day_status(self, day, slot):
         return logic.day_status(self._db, day, slot)
 

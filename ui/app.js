@@ -317,27 +317,26 @@ async function loadSchedule() {
   api('save_settings', {schedule_start: start, schedule_days: Number(days)});
   const head1 = g.dates.map(d => {
     const w = new Date(d + 'T00:00:00').getDay();
-    return `<th colspan="2" class="day ${d === g.today ? 'today' : ''} ${w % 6 === 0 ? 'wkend' : ''}">${d.slice(5).replace('-', '/')}<small>周${WEEK[w]}</small></th>`;
+    return `<th class="day ${d === g.today ? 'today' : ''} ${w % 6 === 0 ? 'wkend' : ''}">${d.slice(5).replace('-', '/')}<small>周${WEEK[w]}</small></th>`;
   }).join('');
-  const head2 = g.dates.map(() => '<th>上午</th><th>下午</th>').join('');
   const body = g.rows.map(r => `<tr><th class="name">${esc(r.name)}${r.active ? "" : "<span class=\"tag\">已停用</span>"}</th><td class="type">${esc(r.type)}</td>` +
-    g.dates.map(d => S.boot.slots.map((s, i) => {
-      const c = r.cells[`${d}|${s}`];
-      const shown = c.raw || '';
+    g.dates.map(d => {
+      const c = r.days[d];
       const cls = c.state !== 'normal' ? c.state : (c.raw ? 'st-' + c.raw : 'st-blank');
-      const tip = c.n ? `该时段已派 ${c.n} 单` + (c.state === 'conflict' ? `，但排班为「${c.raw}」` : '') + '\n' +
+      const tip = (c.halves ? `上午${c.halves[0]}、下午${c.halves[1]}\n` : '') +
+        (c.n ? `当天已派 ${c.n} 单` + (c.state === 'conflict' ? '，但排班与派单冲突' : '') + '\n' +
         c.jobs.map(j => `${j.visit ? (j.visit.time ? j.visit.time + ' ' : '') + j.visit.source + ' ' : ''}${j.no || ''} ${j.customer || ''}` +
-          `${j.d365_status ? '（' + j.d365_status + '）' : ''}${j.risk && j.risk.level ? ' ⚠' + j.risk.text : ''}`).join('\n') : '';
-      return `<td class="cell ${cls} ${i ? 'pm' : ''}" data-e="${r.id}" data-d="${d}" data-s="${s}" title="${esc(tip)}">
-        ${esc(shown)}${c.n ? `<span class="n">${c.n}</span>` : ''}</td>`;
-    }).join('')).join('') + '</tr>').join('');
+          `${j.d365_status ? '（' + j.d365_status + '）' : ''}${j.risk && j.risk.level ? ' ⚠' + j.risk.text : ''}`).join('\n') : '');
+      return `<td class="cell ${cls}" data-e="${r.id}" data-d="${d}" title="${esc(tip)}">
+        ${esc(c.raw || '')}${c.n ? `<span class="n">${c.n}</span>` : ''}</td>`;
+    }).join('') + '</tr>').join('');
   const foot = [['外勤可派人数', '外勤'], ['驻点在岗人数', '驻点']].map(([label, typ]) =>
-    `<tr><th class="name">${label}</th><td class="type"></td>` + g.dates.map(d => S.boot.slots.map((s, i) => {
-      const n = (g.totals[typ] || {})[`${d}|${s}`] ?? 0;
-      return `<td class="${n === 0 ? 'z' : n === 1 ? 'o' : ''} ${i ? 'pm' : ''}">${n}</td>`;
-    }).join('')).join('') + '</tr>').join('');
-  $('#s-table').innerHTML = `<thead><tr><th class="name" rowspan="2">姓名</th><th class="type" rowspan="2">类型</th>${head1}</tr>
-    <tr>${head2}</tr></thead><tbody>${body}</tbody><tfoot>${foot}</tfoot>`;
+    `<tr><th class="name">${label}</th><td class="type"></td>` + g.dates.map(d => {
+      const n = (g.day_totals[typ] || {})[d] ?? 0;
+      return `<td class="${n === 0 ? 'z' : n === 1 ? 'o' : ''}">${n}</td>`;
+    }).join('') + '</tr>').join('');
+  $('#s-table').innerHTML = `<thead><tr><th class="name">姓名</th><th class="type">类型</th>${head1}</tr></thead>
+    <tbody>${body}</tbody><tfoot>${foot}</tfoot>`;
   await loadPool();
 }
 
@@ -345,12 +344,11 @@ async function loadSchedule() {
 async function loadPool() {
   const rows = await safe(() => api('unscheduled'));
   if (!rows) return;
-  const slots = S.boot.slots.map(s => `<option>${s}</option>`).join('');
-  $('#s-pool').innerHTML = rows.length ? `<thead><tr><th>预约截止</th><th>超期</th><th style="width:290px">计划上门</th><th>服务订单号</th>
+  $('#s-pool').innerHTML = rows.length ? `<thead><tr><th>预约截止</th><th>超期</th><th style="width:220px">计划上门</th><th>服务订单号</th>
     <th>Udesk 工单号</th><th>客户</th><th>工程师</th><th>D365 状态</th><th>问题</th></tr></thead><tbody>` + rows.map(o => `
     <tr data-pool="${o.id}"><td class="nowrap">${deadlineHtml(o)}</td><td>${riskBadge(o.risk)}</td>
       <td class="nowrap"><div class="row" style="flex-wrap:nowrap"><input type="date" data-pd value="${esc(S.boot.today)}" style="width:140px">
-        <select data-ps style="width:70px">${slots}</select><button class="primary" data-plan>排期</button></div></td>
+        <button class="primary" data-plan>排期</button></div></td>
       <td class="mono nowrap click" data-order="${o.id}"><u>${esc(o.service_order_no)}</u></td><td class="mono nowrap">${esc(o.udesk_no)}</td>
       <td>${esc(o.customer)}</td><td class="nowrap">${esc(o.engineer) || '<span class="muted">未派工</span>'}</td>
       <td class="nowrap">${esc(o.d365_status)}</td><td class="wrap">${esc((o.problem || '').slice(0, 80))}</td></tr>`).join('') + '</tbody>'
@@ -363,8 +361,8 @@ function cellMenu(td, x, y) {
   const m = $('#menu');
   const colors = {空闲: '--s-free', 外出: '--s-out', 驻点: '--s-site', 休假: '--s-leave', 培训: '--s-train', 休息: '--s-rest'};
   const row = (S.grid?.rows || []).find(r => r.id === +td.dataset.e);
-  const jobs = row ? row.cells[`${td.dataset.d}|${td.dataset.s}`].jobs : [];
-  m.innerHTML = (jobs.length ? `<div class="menu-head">${esc(row.name)} ${esc(td.dataset.d.slice(5))} ${esc(td.dataset.s)} 的工单</div>` +
+  const jobs = row ? row.days[td.dataset.d].jobs : [];
+  m.innerHTML = (jobs.length ? `<div class="menu-head">${esc(row.name)} ${esc(td.dataset.d.slice(5))} 的工单</div>` +
     jobs.map(j => `<button class="job-btn" ${j.order_id ? `data-order="${j.order_id}"` : 'disabled'}>
       <b class="mono">${esc(j.no || '无工单号')}</b> ${esc(j.customer || '')}
       <span class="muted small">${j.visit ? esc((j.visit.time ? j.visit.time + ' ' : '') + j.visit.source) : ''} ${esc(j.d365_status || '')}
@@ -379,7 +377,7 @@ function cellMenu(td, x, y) {
     const b = e.target.closest('button'); if (!b) return;
     m.hidden = true;
     if (b.dataset.order) { openOrder(+b.dataset.order); return; }
-    safe(async () => { await api('set_cell', +td.dataset.e, td.dataset.d, td.dataset.s, b.dataset.v); loadSchedule(); });
+    safe(async () => { await api('set_day', +td.dataset.e, td.dataset.d, b.dataset.v); loadSchedule(); });
   };
 }
 
@@ -904,8 +902,8 @@ async function init() {
     const day = $('[data-pd]', tr).value;
     if (!day) { toast('请先选择日期', true); return; }
     safe(async () => {
-      const o = await api('set_plan', +tr.dataset.pool, day, $('[data-ps]', tr).value);
-      toast(`${o.service_order_no} 已排到 ${day} ${o.planned_slot}${o.risk.level === 'plan_late' ? '（⚠ 晚于预约截止）' : ''}`);
+      const o = await api('set_plan', +tr.dataset.pool, day, '上午');
+      toast(`${o.service_order_no} 已排到 ${day}${o.risk.level === 'plan_late' ? '（⚠ 晚于预约截止）' : ''}`);
       loadSchedule();
     });
   });

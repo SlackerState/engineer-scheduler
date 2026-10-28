@@ -7,7 +7,7 @@
 - 响应：派工 → 到达
 - 超期：到达晚于预约上门时间（考核截止），或至今未到达且已过截止
 - 排班：只算工作日（周一到周五），按整天算：当天有派单算「外出」，否则按排班表的状态（留空 = 外勤空闲 /
-  驻点在岗）；上午下午不一样时按 DAY_PRIORITY 取一个。周末的上门工单照样计入工单数和工时，另计「周末上门」
+  驻点在岗）；上午下午不一样时按 logic.DAY_PRIORITY 取一个。周末的上门工单照样计入工单数和工时，另计「周末上门」
 """
 from __future__ import annotations
 
@@ -19,8 +19,6 @@ from .db import DB, SLOTS
 MAX_ONSITE_H = 12
 MAX_DAYS = 400
 SCHED_KEYS = ("外出", "驻点", "在岗", "空闲", "休假", "培训", "休息")
-# 上午下午状态不同时，整天算哪个（靠前的优先）
-DAY_PRIORITY = ("外出", "驻点", "培训", "休假", "休息", "在岗", "空闲")
 
 
 def _hours(a: str, b: str) -> float | None:
@@ -101,9 +99,7 @@ def _cell(sched: dict, e: dict, day: str, slot: str) -> tuple[str, int]:
 def _day(sched: dict, e: dict, day: str) -> tuple[str, int]:
     """整天的排班状态和派单数。"""
     cells = [_cell(sched, e, day, sl) for sl in SLOTS]
-    sts = [c[0] for c in cells]
-    st = next((x for x in DAY_PRIORITY if x in sts), sts[0])
-    return st, sum(c[1] for c in cells)
+    return logic.pick_day([c[0] for c in cells]), sum(c[1] for c in cells)
 
 
 def _workdays(days: list[str]) -> list[str]:

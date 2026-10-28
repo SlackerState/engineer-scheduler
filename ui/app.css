@@ -119,17 +119,15 @@ table.sched { border-collapse: separate; border-spacing: 0; }
 .sched th, .sched td { border-right: 1px solid var(--line); border-bottom: 1px solid var(--line); text-align: center; padding: 0; }
 .sched thead th { position: sticky; background: #f8f9fb; z-index: 2; font-weight: 600; }
 .sched thead tr:first-child th { top: 0; height: 36px; }
-.sched thead tr:nth-child(2) th { top: 36px; font-weight: 400; color: var(--muted); font-size: 12px; height: 22px; }
 .sched .name { position: sticky; left: 0; background: var(--panel); z-index: 3; text-align: left; padding: 0 10px; width: 112px; min-width: 112px; max-width: 112px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .sched .type { position: sticky; left: 112px; background: var(--panel); z-index: 3; min-width: 46px; color: var(--muted); }
 .sched thead .name, .sched thead .type { z-index: 4; background: #f8f9fb; }
-.sched th.day { min-width: 104px; line-height: 1.2; }
+.sched th.day { min-width: 76px; line-height: 1.2; }
 .sched th.day small { display: block; color: var(--muted); font-weight: 400; }
 .sched th.day.today { background: #fde2e2; color: var(--bad); }
 .sched th.wkend { color: var(--muted); }
-.sched td.cell { height: 34px; min-width: 52px; cursor: pointer; font-size: 12px; position: relative; }
+.sched td.cell { height: 38px; min-width: 76px; cursor: pointer; font-size: 12px; position: relative; }
 .sched td.cell:hover { outline: 2px solid var(--accent); outline-offset: -2px; }
-.sched td.pm { border-right-color: #c9cfda; }
 .sched td.cell .n { position: absolute; right: 2px; top: 1px; font-size: 10px; font-weight: 700; }
 .sched tfoot td { font-weight: 600; height: 28px; background: #fafbfc; }
 .sched tfoot td.z { background: #fdd; color: var(--bad); }

@@ -6,6 +6,14 @@ from datetime import date, datetime, timedelta
 from .db import DB, SLOTS
 
 BLOCKING = ("休假", "培训", "休息", "驻点")
+# 排班表、工作量按整天显示：上午下午状态不同时，整天算哪个（靠前的优先）
+DAY_PRIORITY = ("外出", "驻点", "培训", "休假", "休息", "在岗", "空闲")
+
+
+def pick_day(statuses: list[str]) -> str:
+    """上午/下午两个状态 → 整天的状态；都为空返回空。"""
+    vals = [x for x in statuses if x]
+    return next((x for x in DAY_PRIORITY if x in vals), vals[0] if vals else "")
 
 
 def base_status(raw: str, eng_type: str) -> str:
@@ -77,6 +85,7 @@ def schedule_grid(db: DB, start: str, days: int) -> dict:
             "visit": j.get("visit"), "risk": j.get("risk")})
     rows = []
     totals = {"外勤": {}, "驻点": {}}
+    day_totals: dict = {"外勤": {}, "驻点": {}}  # 当天全天可派（上午下午都空）的人数
     for e in engs:
         cells = {}
         for d in dates:
@@ -89,8 +98,24 @@ def schedule_grid(db: DB, start: str, days: int) -> dict:
                 cells[f"{d}|{s}"] = {"raw": r, "n": n, "state": state, "jobs": jobs.get(k, [])}
                 bucket = totals.setdefault(e["type"], {})
                 bucket[f"{d}|{s}"] = bucket.get(f"{d}|{s}", 0) + (1 if is_available(r, e["type"], n) else 0)
-        rows.append({**e, "cells": cells})
-    return {"dates": dates, "rows": rows, "totals": totals, "today": date.today().isoformat()}
+        # 整天：排班表按天显示
+        day_cells = {}
+        for d in dates:
+            half = [cells[f"{d}|{s}"] for s in SLOTS]
+            n = sum(c["n"] for c in half)
+            state = ("conflict" if any(c["state"] == "conflict" for c in half)
+                     else "dispatched" if n else "normal")
+            raws = [c["raw"] for c in half]
+            day_cells[d] = {"raw": pick_day(raws), "n": n, "state": state,
+                            "jobs": [j for c in half for j in c["jobs"]],
+                            # 上午下午填了两种不同状态时（如上午休假、下午培训），鼠标提示里写明
+                            "halves": raws if all(raws) and len(set(raws)) > 1 else None}
+            bucket = day_totals.setdefault(e["type"], {})
+            free = all(is_available(c["raw"], e["type"], c["n"]) for c in half)
+            bucket[d] = bucket.get(d, 0) + (1 if free else 0)
+        rows.append({**e, "cells": cells, "days": day_cells})
+    return {"dates": dates, "rows": rows, "totals": totals, "day_totals": day_totals,
+            "today": date.today().isoformat()}
 
 
 def day_status(db: DB, day: str, slot: str) -> dict:

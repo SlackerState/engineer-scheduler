@@ -148,25 +148,26 @@ def export_workbook(db: DB, start: str, days: int) -> bytes:
 
     ws = wb.create_sheet("排班表")
     g = logic.schedule_grid(db, start, days)
-    ws.append(["姓名", "类型"] + [x for d in g["dates"] for x in (d, "")])
-    ws.append(["", ""] + [s for _ in g["dates"] for s in SLOTS])
-    for i in range(len(g["dates"])):
-        ws.merge_cells(start_row=1, start_column=3 + 2 * i, end_row=1, end_column=4 + 2 * i)
+    ws.append(["姓名", "类型"] + g["dates"])
     for r in g["rows"]:
         line = [r["name"], r["type"]]
         for d in g["dates"]:
-            for s in SLOTS:
-                c = r["cells"][f"{d}|{s}"]
-                line.append(logic.effective_status(c["raw"], r["type"], c["n"]))
+            c = r["days"][d]
+            st = base = logic.base_status(c["raw"], r["type"])
+            if c["n"]:
+                st = f"⚠ {base}但已派单" if c["state"] == "conflict" else f"外出（{c['n']} 单）"
+            line.append(st)
         ws.append(line)
         for j, cell in enumerate(ws[ws.max_row][2:]):
-            c = r["cells"][f"{g['dates'][j // 2]}|{SLOTS[j % 2]}"]
+            c = r["days"][g["dates"][j]]
             color = {"dispatched": "FFC983", "conflict": "FF9C9C"}.get(
                 c["state"], FILLS.get(logic.base_status(c["raw"], r["type"]), "FFFFFF"))
             cell.fill = PatternFill("solid", fgColor=color)
             cell.alignment = Alignment(horizontal="center")
     for label, typ in (("外勤可派人数", "外勤"), ("驻点在岗人数", "驻点")):
-        ws.append([label, ""] + [g["totals"].get(typ, {}).get(f"{d}|{s}", 0) for d in g["dates"] for s in SLOTS])
+        ws.append([label, ""] + [g["day_totals"].get(typ, {}).get(d, 0) for d in g["dates"]])
+    for i in range(len(g["dates"])):
+        ws.column_dimensions[get_column_letter(3 + i)].width = 12
     ws.column_dimensions["A"].width = 14
 
 
