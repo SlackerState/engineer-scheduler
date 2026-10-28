@@ -400,27 +400,67 @@ async function loadToday() {
   await loadCreated();
 }
 
-// 按创建日期查工单：选中日期及之后创建的工单
+// 按创建日期查工单：选中日期及之后创建的工单；表头下一行可按各列筛选（在本页内筛，不重新查询）
+const C_COLS = [  // [字段, 列名, 筛选方式]
+  ['day', '创建日期', 'select'], ['service_order_no', '服务订单号', 'text'], ['udesk_no', 'Udesk 工单号', 'text'],
+  ['customer', '客户', 'text'], ['serial', '机器序列号', 'text'], ['problem', '问题', 'text'],
+  ['engineer', '工程师', 'select'], ['status', '状态', 'select'], ['d365_status', 'D365 状态', 'select'],
+  ['appointment', '预约上门', 'text']];
+S.cRows = []; S.cFilter = {};
+const cVal = (o, k) => k === 'engineer' ? (o.engineer || '未派工') : String(o[k] ?? '');
+
 async function loadCreated() {
   const from = $('#c-from').value;
   if (!from) return;
   const r = await safe(() => api('orders_since', from, $('#c-status').value));
   if (!r) return;
-  $('#c-count').textContent = `共 ${r.rows.length} 单`;
   const hint = $('#c-hint');
   hint.hidden = !r.beyond_sync;
   if (r.beyond_sync) hint.innerHTML = `平时只同步最近的工单（${esc(r.synced_from)} 起），更早创建的可能不全。
     <button class="primary" id="c-pull">从 D365 拉取 ${esc(from)} 起的工单</button>`;
-  $('#c-table').innerHTML = r.rows.length ? `<thead><tr><th>创建日期</th><th>服务订单号</th><th>Udesk 工单号</th><th>客户</th>
-    <th>机器序列号</th><th>问题</th><th>工程师</th><th>状态</th><th>D365 状态</th><th>预约上门</th></tr></thead><tbody>` +
-    r.rows.map(o => `<tr class="click" data-order="${o.id}">
+  S.cRows = r.rows;
+  const t = $('#c-table');
+  if (!r.rows.length) {
+    t.innerHTML = '<tr><td class="empty">这个日期之后没有创建的工单</td></tr>';
+    $('#c-count').textContent = '共 0 单';
+    return;
+  }
+  // 下拉框的选项来自当前结果；之前选的值不在新结果里就清掉
+  const opts = k => [...new Set(r.rows.map(o => cVal(o, k)).filter(Boolean))]
+    .sort((a, b) => k === 'day' ? b.localeCompare(a) : a.localeCompare(b));
+  for (const [k, , kind] of C_COLS) if (kind === 'select' && S.cFilter[k] && !opts(k).includes(S.cFilter[k])) delete S.cFilter[k];
+  t.innerHTML = `<thead><tr>${C_COLS.map(c => `<th>${c[1]}</th>`).join('')}</tr>
+    <tr class="filters">${C_COLS.map(([k, label, kind]) => `<th>${kind === 'select'
+      ? `<select data-cf="${k}"><option value="">全部</option>${opts(k).map(v =>
+          `<option ${S.cFilter[k] === v ? 'selected' : ''}>${esc(v)}</option>`).join('')}</select>`
+      : `<input type="search" data-cf="${k}" placeholder="筛选${esc(label)}" value="${esc(S.cFilter[k] || '')}">`}</th>`).join('')}</tr>
+    </thead><tbody></tbody>`;
+  t.tHead.oninput = e => {
+    const k = e.target.dataset.cf; if (!k) return;
+    if (e.target.value.trim()) S.cFilter[k] = e.target.value; else delete S.cFilter[k];
+    renderCreatedRows();
+  };
+  renderCreatedRows();
+}
+
+function renderCreatedRows() {
+  const f = Object.entries(S.cFilter);
+  // 文字筛选：不分大小写，空格分开的几个词都要出现；下拉筛选：完全相等
+  const hit = o => f.every(([k, v]) => C_COLS.find(c => c[0] === k)[2] === 'select' ? cVal(o, k) === v
+    : v.toLowerCase().split(/\s+/).filter(Boolean).every(w => cVal(o, k).toLowerCase().includes(w)));
+  const rows = S.cRows.filter(hit);
+  $('#c-count').innerHTML = f.length
+    ? `筛选出 <b>${rows.length}</b> / ${S.cRows.length} 单 <button class="link" id="c-clear">清除筛选</button>`
+    : `共 ${S.cRows.length} 单`;
+  if ($('#c-clear')) $('#c-clear').onclick = () => { S.cFilter = {}; loadCreated(); };
+  $('#c-table').tBodies[0].innerHTML = rows.length ? rows.map(o => `<tr class="click" data-order="${o.id}">
       <td class="nowrap">${esc(o.day)}</td>
       <td class="mono nowrap">${esc(o.service_order_no)}${o.order_type ? `<span class="tag">${esc(o.order_type)}</span>` : ''}</td>
       <td class="mono nowrap">${esc(o.udesk_no)}</td><td>${esc(o.customer)}</td><td class="mono">${esc(o.serial)}</td>
       <td class="wrap">${esc((o.problem || '').slice(0, 100))}</td><td class="nowrap">${esc(o.engineer) || '<span class="muted">未派工</span>'}</td>
       <td><span class="badge b-${esc(o.status)}">${esc(o.status)}</span></td>
-      <td class="nowrap">${esc(o.d365_status)}</td><td class="nowrap">${esc(o.appointment)}</td></tr>`).join('') + '</tbody>'
-    : '<tr><td class="empty">这个日期之后没有创建的工单</td></tr>';
+      <td class="nowrap">${esc(o.d365_status)}</td><td class="nowrap">${esc(o.appointment)}</td></tr>`).join('')
+    : `<tr><td class="empty" colspan="${C_COLS.length}">没有符合筛选条件的工单</td></tr>`;
 }
 
 // 一条派单（关联的 D365 工单）的小卡片，点击打开工单详情

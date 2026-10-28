@@ -200,3 +200,9 @@ td.st-blank { color: var(--muted); }
 .modal-box .actions { display: flex; justify-content: flex-end; gap: 8px; }
 .toast { position: fixed; bottom: 18px; left: 50%; transform: translateX(-50%); background: #1d2433; color: #fff; padding: 9px 16px; border-radius: 8px; z-index: 70; max-width: 80vw; white-space: pre-wrap; }
 .toast.err { background: var(--bad); }
+
+/* 表头下的筛选行：整个表头一起吸顶，避免两行表头叠在一起 */
+.grid:has(tr.filters) thead { position: sticky; top: 0; z-index: 2; }
+.grid:has(tr.filters) th { position: static; }
+.grid tr.filters th { padding-top: 0; font-weight: 400; }
+.grid tr.filters input, .grid tr.filters select { min-width: 80px; max-width: 170px; font-size: 12px; padding: 3px 5px; }
