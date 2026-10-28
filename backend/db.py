@@ -41,6 +41,9 @@ DEFAULT_SETTINGS = {
     "network_filter": "UK Kent 01 S",  # 服务网点，留空 = 不过滤
     "lookback_days": 30,
     "udesk_url": "https://sany.s5.udesk.cn/entry/",
+    "udesk_agent_id": "",           # Udesk 坐席 ID：在软件里建服务订单时标明是谁建的
+    "udesk_mid_url": "https://sanyi-mid.s5.udesk.cn/sanyi",  # Udesk 建单插件背后的三一中间件
+    "udesk_timezone": "Europe/London",
     "d365_status_overrides_local": True,
     "d365_to_dispatch": True,
     # 同步

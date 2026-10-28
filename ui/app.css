@@ -226,3 +226,5 @@ td.st-blank { color: var(--muted); }
 .bs-借料待提交 { background: #fff2b3; color: #7a5b00; }
 .bs-借料审批中 { background: #e3ecfb; color: var(--accent); }
 .bs-已取消 { background: #eee; color: var(--muted); }
+.form.two { display: grid; grid-template-columns: 1fr 1fr; gap: 10px 14px; }
+.form.two .wide { grid-column: 1 / -1; }

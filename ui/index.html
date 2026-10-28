@@ -41,7 +41,7 @@
       <input id="o-kw" type="search" placeholder="搜索订单号 / SVC / 客户 / 序列号 / 问题">
       <button id="o-batch" class="primary" hidden>批量改派</button>
       <button id="o-find">查 D365 订单</button>
-      <button id="o-udesk">在 Udesk 新建工单 ↗</button>
+      <button id="o-udesk">新建服务订单（Udesk）</button>
       <button id="o-new">手工新增</button>
     </div>
   </header>
@@ -166,7 +166,8 @@
       <h2>同步设置</h2>
       <label>D365 网址<input name="d365_url"></label>
       <label>D365 应用 ID（打开订单链接用）<input name="d365_appid"></label>
-      <label>Udesk 网址（「在 Udesk 新建工单」打开这里）<input name="udesk_url"></label>
+      <label>Udesk 网址<input name="udesk_url"></label>
+      <label>Udesk 坐席 ID（在软件里建服务订单时标明是谁建的，Udesk 建单页地址里的 agentId）<input name="udesk_agent_id" placeholder="如 13960"></label>
       <label>订单来源（mcs_ordersource，60 = Udesk，多个用逗号）<input name="order_sources"></label>
       <label>只同步该服务网点（留空 = 全部）<input name="network_filter"></label>
       <label>同步最近多少天创建的订单<input name="lookback_days" type="number" min="1"></label>
@@ -207,7 +208,6 @@
 </main>
 
 <div id="drawer" class="drawer" hidden></div>
-<div id="modal" class="modal" hidden><div class="modal-box"></div></div>
 <div id="menu" class="menu" hidden></div>
 <div id="toast" class="toast" hidden></div>
 <script src="app.js"></script>

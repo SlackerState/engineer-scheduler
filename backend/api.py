@@ -12,6 +12,7 @@ from .browser import Browser, NeedLogin
 from .d365 import D365, normalize
 from .db import DB, ORDER_EDITABLE, ORDER_STATUSES, SLOTS, STATUSES, app_dir
 from .sync import Syncer
+from .udesk import SOURCE_CHANNELS, Udesk
 from .updater import Updater
 from .version import __version__
 
@@ -23,6 +24,7 @@ class Api:
         self._db = db or DB()
         self._browser = Browser(app_dir(), self._db.settings)
         self._d365 = D365(self._browser, self._db.settings)
+        self._udesk = Udesk(self._db.settings)
         self._sync = Syncer(self._db, self._d365)
         self._updater = Updater(self._db.settings)
         self._updater.cleanup_old()
@@ -385,6 +387,34 @@ class Api:
             if s.get("d365_to_dispatch", True):
                 self._sync.sync_dispatch(row, engineers)
         return len(recs)
+
+    # ---------- 在 Udesk 建服务订单（三一中间件） ----------
+    def udesk_options(self):
+        s = self._db.settings()
+        return {"process_types": self._udesk.process_types(), "channels": SOURCE_CHANNELS,
+                "agent_id": s.get("udesk_agent_id") or "", "udesk_url": s.get("udesk_url") or ""}
+
+    def udesk_lookup(self, equipment_no):
+        return self._udesk.lookup(equipment_no or "")
+
+    def udesk_engineers(self, keyword, country):
+        return self._udesk.engineers(keyword or "", country or "")
+
+    def udesk_check(self, form):
+        return self._udesk.check(form or {})
+
+    def udesk_create(self, form):
+        """建单后马上从 D365 拉这单进订单清单（中间件推送到 D365 可能要等一会，拉不到就等下次同步）。"""
+        r = self._udesk.create(form or {})
+        imported, oid = 0, None
+        if r.get("crm"):
+            try:
+                imported = self.add_from_d365(r["crm"])
+            except Exception as e:  # noqa: BLE001 - 没登录 D365 等，不影响建单结果
+                r["import_error"] = str(e).splitlines()[0][:200]
+            o = self._db.one("SELECT id FROM orders WHERE service_order_no=? OR udesk_no=?", (r["crm"], r["svc"]))
+            oid = o and o["id"]
+        return {**r, "imported": imported, "order_id": oid}
 
     # ---------- 写回 D365 ----------
     def _d365_order(self, oid) -> dict:

@@ -54,10 +54,13 @@ async function safe(fn) {
   try { return await fn(); } catch (e) { toast(e.message || String(e), true); }
 }
 
+// 弹窗：每次新建一层，确认框可以叠在对话框上面（关掉确认框后对话框还在）
 function modal(html, onMount) {
-  const m = $('#modal'), box = $('.modal-box', m);
-  box.innerHTML = html; m.hidden = false;
-  const close = () => { m.hidden = true; box.innerHTML = ''; };
+  const m = document.createElement('div');
+  m.className = 'modal'; m.innerHTML = '<div class="modal-box"></div>';
+  const box = $('.modal-box', m);
+  box.innerHTML = html; document.body.appendChild(m);
+  const close = () => m.remove();
   m.onclick = e => { if (e.target === m) close(); };
   onMount && onMount(box, close);
   return close;
@@ -200,6 +203,83 @@ function assignDialog(oids, after) {
       if (res) { showResults(res); after && after(); }
     };
     load();
+  });
+}
+
+// 新建服务订单：同 Udesk 建单插件（三一中间件），生成 SVC 单并推送到 D365
+function createOrderDialog() {
+  modal(`<h2>新建服务订单</h2>
+    <p class="muted small" style="margin:0">和 Udesk 里「建单 → 服务订单」一样：提交到三一中间件，生成 SVC 单并推送到 D365，派工照常在 D365 / 本软件里做。
+      <a class="lnk" id="co-web">在 Udesk 网页里建 ↗</a></p>
+    <div id="co-body"><div class="empty">正在读取订单类型…</div></div>
+    <div class="actions"><button data-close>取消</button><button class="primary" id="co-ok" disabled>提交建单</button></div>`, async (box, close) => {
+    $('[data-close]', box).onclick = close;
+    $('#co-web', box).onclick = () => api('open_udesk');
+    const opt = await safe(() => api('udesk_options'));
+    if (!opt) { close(); return; }
+    const f = {country: '', engineerId: '', engineerName: ''};
+    $('#co-body', box).innerHTML = `
+      ${opt.agent_id ? '' : '<div class="check bad">还没填 Udesk 坐席 ID：请先到「设置 → 同步设置」里填写（Udesk 建单页地址里的 agentId），否则不能提交。</div>'}
+      <div class="row"><input id="co-eq" placeholder="设备编号（机器序列号），如 TH0625CG1143" style="flex:1"><button id="co-find">查设备</button></div>
+      <div id="co-info" class="muted small"></div>
+      <div class="form two">
+        <label>订单类型 *<select id="co-type"><option value="">请选择</option>${opt.process_types.map(t => `<option value="${esc(t.value)}">${esc(t.label)}</option>`).join('')}</select></label>
+        <label>来源渠道 *<select id="co-ch">${opt.channels.map(c => `<option value="${c.value}">${esc(c.label)}</option>`).join('')}</select></label>
+        <label>联系人 *<input id="co-ct"></label>
+        <label>联系电话 *<input id="co-ph" maxlength="20"></label>
+        <label class="wide">服务目的地 *（最多 50 字）<input id="co-loc" maxlength="50"></label>
+        <label class="wide">订单描述 <span class="muted small" id="co-desc-hint">（召请单必填，最多 500 字）</span><textarea id="co-desc" rows="3" maxlength="500"></textarea></label>
+        <label>预约时间（可不填，30 天内）<input id="co-appt" type="datetime-local"></label>
+        <label>服务工程师 <span class="muted small">（开机单必选）</span>
+          <div class="row" style="flex-wrap:nowrap"><input id="co-eng-kw" placeholder="姓名搜索" style="flex:1"><button id="co-eng-go">搜索</button></div>
+          <select id="co-eng"><option value="">不指定</option></select></label>
+      </div>`;
+    const v = id => $(id, box).value.trim();
+    const form = () => ({
+      equipmentId: v('#co-eq'), processType: v('#co-type'), isInitByEng: v('#co-ch'), zzSrvPer: v('#co-ct'), zzPerTel: v('#co-ph'),
+      zzeqpLocation: v('#co-loc'), textZ013: v('#co-desc'), appointmentTime: v('#co-appt').replace('T', ' '),
+      country: f.country, engineerId: $('#co-eng', box).value, engineerName: $('#co-eng', box).selectedOptions[0]?.dataset.name || '',
+    });
+    const find = async () => {
+      const no = v('#co-eq'); if (!no) { toast('请输入设备编号', true); return; }
+      $('#co-info', box).textContent = '正在查 Udesk…';
+      const r = await safe(() => api('udesk_lookup', no));
+      if (!r) { $('#co-info', box).textContent = ''; return; }
+      f.country = r.country;
+      $('#co-info', box).innerHTML = `<b>${esc(r.customer)}</b> · ${esc(r.model)} · 国家 ${esc(r.country)}${r.warranty ? ' · ' + esc(r.warranty) : ''}${r.network ? ' · ' + esc(r.network) : ''}`;
+      if (!v('#co-ct')) $('#co-ct', box).value = r.contact;
+      if (!v('#co-ph')) $('#co-ph', box).value = (r.phone || '').slice(0, 20);
+      if (!v('#co-loc')) $('#co-loc', box).value = (r.address || '').replace(/\s+/g, ' ').slice(0, 50);
+      $('#co-ok', box).disabled = !opt.agent_id;
+    };
+    $('#co-find', box).onclick = find;
+    $('#co-eq', box).onkeydown = e => { if (e.key === 'Enter') find(); };
+    $('#co-eq', box).oninput = () => { f.country = ''; $('#co-ok', box).disabled = true; };
+    $('#co-eng-go', box).onclick = async () => {
+      if (!f.country) { toast('请先查设备', true); return; }
+      const rows = await safe(() => api('udesk_engineers', v('#co-eng-kw'), f.country)) || [];
+      $('#co-eng', box).innerHTML = `<option value="">不指定</option>` + rows.map(e => `<option value="${esc(e.id)}" data-name="${esc(e.name)}">${esc(e.name)}</option>`).join('');
+      if (rows.length) $('#co-eng', box).selectedIndex = 1; else toast('没有找到工程师', true);
+    };
+    $('#co-ok', box).onclick = async () => {
+      const fm = form();
+      const errs = await safe(() => api('udesk_check', fm));
+      if (!errs) return;
+      if (errs.length) { toast(errs.join('；'), true); return; }
+      const typ = $('#co-type', box).selectedOptions[0].textContent;
+      if (!await ask(`在 Udesk 建一张真实的服务订单？\n\n设备 ${fm.equipmentId} · ${typ}\n联系人 ${fm.zzSrvPer} ${fm.zzPerTel}\n服务目的地 ${fm.zzeqpLocation}` +
+        `${fm.appointmentTime ? '\n预约 ' + fm.appointmentTime : ''}${fm.engineerName ? '\n工程师 ' + fm.engineerName : ''}\n\n提交后会推送到 D365。`, '提交建单')) return;
+      $('#co-ok', box).disabled = true; $('#co-ok', box).textContent = '正在提交…';
+      const res = await safe(() => api('udesk_create', fm));
+      $('#co-ok', box).textContent = '提交建单';
+      if (!res) { $('#co-ok', box).disabled = false; return; }
+      close();
+      const nos = [res.svc, res.crm].filter(Boolean).join(' / ');
+      toast(nos ? `已建单：${nos}` + (res.imported ? '，已加入订单清单' : '（D365 推送后，下次同步会出现）') : '已提交，Udesk 处理后下次同步会出现');
+      refreshView();
+      if (res.order_id) openOrder(res.order_id);
+    };
+    $('#co-eq', box).focus();
   });
 }
 
@@ -996,7 +1076,7 @@ async function init() {
     const tr = e.target.closest('tr[data-id]'); if (tr) openOrder(+tr.dataset.id);
   };
   $('#o-batch').onclick = () => assignDialog([...S.selected], loadOrders);
-  $('#o-udesk').onclick = () => api('open_udesk');
+  $('#o-udesk').onclick = () => createOrderDialog();
   $('#o-find').onclick = findD365;
   $('#o-new').onclick = () => openOrder(null);
 
