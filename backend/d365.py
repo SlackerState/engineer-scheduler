@@ -120,6 +120,195 @@ class D365:
                                 body={"mcs_consumptionquantity": qty}, headers={"If-Match": "*"})
         return {"order_d365_id": so_id, "name": name, "old": old, "new": qty, "confirm": confirm}
 
+    # ---------- 加配件 / 申请借料 / 提交审批 ----------
+    # 规则照 D365：工单表单 mcs_serviceorder.js 的「申请备件」（ApplyForParts + ApplyForPartsEnableRule +
+    # WriteOffInspection），借料单表单 mcs_repairmaterialorder.js 的「提交审批」（SubmitApproval）
+    def search_parts(self, keyword: str) -> list[dict]:
+        """按物料号（开头匹配）或英文名称（包含）查 D365 物料主数据 mcs_part。"""
+        kw = _q(keyword.strip())
+        if len(kw) < 2:
+            return []
+        by_no = any(c.isdigit() for c in kw) and " " not in kw
+        flt = f"startswith(mcs_name,'{kw}')" if by_no else f"contains(mcs_partname,'{kw}')"
+        rows = self.browser.fetch_json(self.base, self._api(
+            f"mcs_parts?$select=mcs_partid,mcs_name,mcs_partname,mcs_deleteflag"
+            f"&$filter={quote(flt + ' and statecode eq 0')}&$top=30&$orderby=mcs_name")).get("value", [])
+        return [{"id": r["mcs_partid"], "no": r.get("mcs_name") or "", "name": r.get("mcs_partname") or ""}
+                for r in rows if not r.get("mcs_deleteflag")]
+
+    def _order_live(self, rid: str) -> dict:
+        sel = ("mcs_ordernumber,mcs_orderstatus,mcs_ordertype,mcs_existfault,mcs_serviceordermode,mcs_offlineoperation,"
+               "_mcs_dealerid_value,mcs_fullmaintenance,_mcs_fullmaintenancecontractid_value,_mcs_country_value,"
+               "_mcs_region_value,mcs_receiver,mcs_receiverphone,mcs_receiveraddress")
+        return self.browser.fetch_json(self.base, self._api(f"{ENTITY_SET}({rid})?$select={sel}"))
+
+    def add_part(self, rid: str, part: dict, qty: float) -> dict:
+        """给工单新增一条服务配件（同 D365 快速创建表单：配件、数量、所属工单），
+        行号、确认数量、价格等由 D365 插件生成。"""
+        if not qty or qty <= 0:
+            raise RuntimeError("数量要大于 0")
+        o = self._order_live(rid)
+        if o.get("mcs_orderstatus") in FINAL_CODES:
+            raise RuntimeError(f"工单 {o.get('mcs_ordernumber')} 当前状态为「{o.get('mcs_orderstatus' + FV)}」，不能再加配件")
+        body = {"mcs_serviceorder@odata.bind": f"/{ENTITY_SET}({rid})", "mcs_part@odata.bind": f"/mcs_parts({part['id']})",
+                "mcs_quantity": qty, "mcs_dealerstock": False}
+        if part.get("name"):
+            body["mcs_partfullname"] = part["name"]
+        r = self.browser.fetch_json(self.base, self._api("mcs_serviceparts?$select=mcs_servicepartid,mcs_name"),
+                                    method="POST", body=body, headers={"Prefer": "return=representation"})
+        return {"id": r.get("mcs_servicepartid"), "line": r.get("mcs_name") or ""}
+
+    def delete_part(self, part_id: str) -> str:
+        """删掉还没申请（不在借料单上）、没核销、没消耗的服务配件。"""
+        sel = ("mcs_partfullname,mcs_consumptionquantity,_mcs_repairmaterialorderid_value,"
+               "_mcs_partswriteoffdocid_value,_mcs_retunorderid_value")
+        p = self.browser.fetch_json(self.base, self._api(f"mcs_serviceparts({part_id})?$select={sel}"))
+        name = p.get("mcs_partfullname") or "配件"
+        if p.get("_mcs_repairmaterialorderid_value"):
+            raise RuntimeError(f"{name} 已经在借料单 {p.get('_mcs_repairmaterialorderid_value' + FV) or ''} 上，不能删除")
+        if p.get("_mcs_partswriteoffdocid_value") or p.get("_mcs_retunorderid_value") or (p.get("mcs_consumptionquantity") or 0) > 0:
+            raise RuntimeError(f"{name} 已有消耗、核销或归还记录，不能删除")
+        self.browser.fetch_json(self.base, self._api(f"mcs_serviceparts({part_id})"), method="DELETE")
+        return name
+
+    def set_receiver(self, rid: str, receiver: str, phone: str, address: str):
+        """申请备件前要填的收货人 / 电话 / 地址（写在工单上）。"""
+        self.browser.fetch_json(self.base, self._api(f"{ENTITY_SET}({rid})"), method="PATCH", headers={"If-Match": "*"},
+                                body={"mcs_receiver": receiver, "mcs_receiverphone": phone, "mcs_receiveraddress": address})
+
+    def _apply_rule(self, o: dict) -> str:
+        """同 ApplyForPartsEnableRule（非印度）：返回不能申请的原因，空 = 可以。"""
+        st, typ, mode = o.get("mcs_orderstatus"), o.get("mcs_ordertype"), o.get("mcs_serviceordermode")
+        stf = o.get("mcs_orderstatus" + FV) or st
+        if typ and typ != 80 and not o.get("mcs_existfault"):
+            return "工单「是否存在故障」为否，D365 不允许申请备件"
+        if o.get("_mcs_fullmaintenancecontractid_value") and o.get("mcs_fullmaintenance"):
+            c = self.browser.fetch_json(self.base, self._api(
+                f"mcs_fullmaintenancecontracts({o['_mcs_fullmaintenancecontractid_value']})?$select=mcs_contractentity"))
+            if c.get("mcs_contractentity") == 2:
+                return "全保合同工单不在这里申请备件"
+        if typ == 40 and o.get("_mcs_dealerid_value"):
+            return "" if st is not None and 70 <= st < 100 else f"工单状态为「{stf}」，只有已接收到现场完工之前可以申请备件"
+        if mode != 20 and o.get("mcs_offlineoperation") and st == 100:
+            return ""
+        if typ in (30, 40, 110) and st == 96:
+            return "工单处于「暂停维修」，D365 不允许申请备件"
+        if mode == 20:
+            return "服务代理商模式的工单不能在这里申请备件"
+        return "" if st is not None and 70 <= st < 100 else f"工单状态为「{stf}」，只有已接收到现场完工之前可以申请备件"
+
+    def _writeoff_block(self, o: dict) -> str:
+        """同 WriteOffInspection：当前用户在本大区有超期未核销的借料、且催办次数已到上限时，不允许再申请。"""
+        me = self.whoami().get("UserId")
+        pers = self.browser.fetch_json(self.base, self._api(
+            f"mcs_personnels?$select=mcs_domainaccount&$filter={quote(f'statecode eq 0 and _mcs_systemuserid_value eq {me}')}"
+        )).get("value", [])
+        dom = (pers[0].get("mcs_domainaccount") if pers else "") or ""
+        region = o.get("_mcs_region_value")
+        if o.get("_mcs_country_value"):
+            c = self.browser.fetch_json(self.base, self._api(
+                f"mcs_countries({o['_mcs_country_value']})?$select=mcs_isenable,_mcs_region_value"))
+            if c.get("mcs_isenable"):
+                region = c.get("_mcs_region_value")
+        if not region:
+            return ""
+        cfg = self.browser.fetch_json(self.base, self._api(
+            "mcs_writeoffconfigurationtables?$select=mcs_unwrittendays,mcs_remindersnumber,mcs_accountwhitelist"
+            f"&$filter={quote(f'statecode eq 0 and _mcs_region_value eq {region}')}&$top=1")).get("value", [])
+        if not cfg:
+            return ""
+        cfg = cfg[0]
+        if dom and dom in (cfg.get("mcs_accountwhitelist") or "").split(","):
+            return ""
+        flt = f"statecode eq 0 and _mcs_region_value eq {region} and mcs_name eq '{_q(dom)}' and mcs_writeoffstatus eq 1"
+        det = self.browser.fetch_json(self.base, self._api(
+            f"mcs_unwrittenborrowingdetailses?$select=mcs_unwrittendays,mcs_remindersnumber&$filter={quote(flt)}"
+            "&$orderby=mcs_unwrittendays desc&$top=1")).get("value", [])
+        if det and (det[0].get("mcs_unwrittendays") or 0) > (cfg.get("mcs_unwrittendays") or 0) \
+                and (det[0].get("mcs_remindersnumber") or 0) >= (cfg.get("mcs_remindersnumber") or 0):
+            return "你有超期未核销的借料单。按总部规定，要先完成核销才能再申请备件（D365 同样会拦下）"
+        return ""
+
+    def apply_check(self, rid: str) -> dict:
+        """申请借料前的检查：不能申请的原因、收货信息、这次会申请的配件（还没在借料单上的）。"""
+        o = self._order_live(rid)
+        parts = [normalize_part(r) for r in self._by_orders("mcs_serviceparts", PART_SELECT, "_mcs_serviceorder_value", [rid])]
+        pending = [p for p in parts if not p["material_id"]]
+        blockers = [x for x in (self._apply_rule(o),) if x]
+        if not pending:
+            blockers.append("没有待申请的配件：请先添加配件（已在借料单上的不会重复申请）")
+        if not blockers:
+            w = self._writeoff_block(o)
+            if w:
+                blockers.append(w)
+        return {"order_no": o.get("mcs_ordernumber"), "blockers": blockers, "pending": pending,
+                "receiver": o.get("mcs_receiver") or "", "phone": o.get("mcs_receiverphone") or "",
+                "address": o.get("mcs_receiveraddress") or ""}
+
+    def apply_parts(self, rid: str) -> str:
+        """申请备件（Service_ApplyForPartsApi），生成借料单，返回借料单 id。"""
+        chk = self.apply_check(rid)
+        if chk["blockers"]:
+            raise RuntimeError("；".join(chk["blockers"]))
+        missing = [n for n, k in (("收货人", "receiver"), ("收货电话", "phone"), ("收货地址", "address")) if not chk[k].strip()]
+        if missing:
+            raise RuntimeError("请先填写" + "、".join(missing))
+        data = self.browser.fetch_json(self.base, self._api("Service_ApplyForPartsApi"), method="POST", body={"OrderId": rid})
+        res = data.get("Result")
+        if isinstance(res, str) and res.strip().startswith("{"):
+            j = json.loads(res)
+            if j.get("IsSuccess") is False:
+                raise RuntimeError(j.get("Message") or "申请备件失败")
+            res = j.get("Data") or j.get("Id") or ""
+        return str(res or "")
+
+    def _material_live(self, mid: str) -> dict:
+        sel = "mcs_code,mcs_type,mcs_orderstatus,_mcs_seller_value,_mcs_customer_value,_mcs_serviceorderid_value"
+        return self.browser.fetch_json(self.base, self._api(f"mcs_repairmaterialorders({mid})?$select={sel}"))
+
+    def material_check(self, mid: str) -> dict:
+        """同 SubmitApproval：先检查能不能提交，再取 D365 的配件替换提醒（只提醒、不拦）。"""
+        m = self._material_live(mid)
+        code, typ, st = m.get("mcs_code"), m.get("mcs_type"), m.get("mcs_orderstatus")
+        blockers = []
+        if st not in (10, 40):
+            blockers.append(f"{code} 当前状态为「{m.get('mcs_orderstatus' + FV)}」，只有已创建或已拒绝的单可以提交审批")
+        if typ == MAT_RETURN:
+            blockers.append("归还单请在 D365 里提交")
+        so = m.get("_mcs_serviceorderid_value")
+        in_site = True
+        if so:
+            t = self.browser.fetch_json(self.base, self._api(f"{ENTITY_SET}({so})?$select=mcs_ordertype")).get("mcs_ordertype")
+            in_site = t in (10, 50, 70, 100, 40)
+        if not in_site and typ in (20, 40):
+            if m.get("_mcs_seller_value") and m.get("_mcs_seller_value") == m.get("_mcs_customer_value"):
+                blockers.append("借料单的销售方和客户相同，D365 不允许提交")
+            if m.get("_mcs_customer_value"):
+                a = self.browser.fetch_json(self.base, self._api(f"accounts({m['_mcs_customer_value']})?$select=mcs_accountstage"))
+                if a.get("mcs_accountstage") == 1:
+                    blockers.append("客户还是潜在客户，D365 不允许提交审批")
+        n = len(self.browser.fetch_json(self.base, self._api(
+            f"mcs_serviceparts?$select=mcs_servicepartid&$filter={quote(f'_mcs_repairmaterialorderid_value eq {mid}')}")).get("value", []))
+        if not n:
+            blockers.append("借料单上没有配件")
+        warnings = []
+        if not blockers:
+            res = self._action("Service_CheckPartsReplacementInfoApi", {"OrderId": mid})
+            if isinstance(res, dict) and res.get("Result") and res.get("Description"):
+                try:
+                    warnings = [str(x) for x in json.loads(res["Description"]) or []]
+                except (TypeError, ValueError):
+                    warnings = [str(res["Description"])]
+        return {"code": code, "blockers": blockers, "warnings": warnings, "parts": n}
+
+    def submit_material(self, mid: str) -> str:
+        chk = self.material_check(mid)
+        if chk["blockers"]:
+            raise RuntimeError("；".join(chk["blockers"]))
+        self.browser.fetch_json(self.base, self._api(f"mcs_repairmaterialorders({mid})"), method="PATCH",
+                                body={"mcs_orderstatus": 20}, headers={"If-Match": "*"})
+        return chk["code"]
+
     def materials_for(self, order_ids: list[str]) -> list[dict]:
         return [normalize_material(r) for r in
                 self._by_orders("mcs_repairmaterialorders", MATERIAL_SELECT, "_mcs_serviceorderid_value", order_ids)]

@@ -222,3 +222,7 @@ td.st-blank { color: var(--muted); }
 .offline { position: fixed; inset: 0; background: rgba(20,28,44,.55); display: flex; align-items: center; justify-content: center; z-index: 1000; }
 .offline > div { background: var(--panel); border-radius: 10px; padding: 22px 28px; max-width: 380px; box-shadow: 0 10px 40px rgba(0,0,0,.25); }
 .offline b { font-size: 16px; }
+.check.bad { background: #fdecec; color: var(--bad); }
+.bs-借料待提交 { background: #fff2b3; color: #7a5b00; }
+.bs-借料审批中 { background: #e3ecfb; color: var(--accent); }
+.bs-已取消 { background: #eee; color: var(--muted); }

@@ -235,6 +235,60 @@ class Api:
         r["remaining"] = p["remaining_qty"] if p else None
         return {**self.order_parts(oid), "changed": r}
 
+    # ---------- 加配件 / 申请借料 / 提交审批（写入 D365） ----------
+    def _d365_call(self, fn, *a):
+        try:
+            return fn(*a)
+        except NeedLogin as e:
+            raise RuntimeError(f"{e}，请先点「同步 D365」登录") from e
+
+    def search_parts(self, keyword):
+        return self._d365_call(self._d365.search_parts, keyword or "")
+
+    def add_order_part(self, oid, part, qty):
+        """part = {id, no, name}（来自 search_parts）。"""
+        o = self._d365_order(oid)
+        r = self._d365_call(self._d365.add_part, o["d365_id"], part, float(qty))
+        self._sync.sync_parts([o["d365_id"]])
+        return {**self.order_parts(oid), "added": {**r, "name": part.get("name"), "no": part.get("no")}}
+
+    def delete_order_part(self, oid, part_id):
+        o = self._d365_order(oid)
+        name = self._d365_call(self._d365.delete_part, part_id)
+        self._sync.sync_parts([o["d365_id"]])
+        return {**self.order_parts(oid), "deleted": name}
+
+    def apply_check(self, oid):
+        o = self._d365_order(oid)
+        return self._d365_call(self._d365.apply_check, o["d365_id"])
+
+    def apply_parts(self, oid, receiver=None):
+        """申请借料：收货信息有改动时先写回工单，再调 D365「申请备件」，返回新借料单。"""
+        o = self._d365_order(oid)
+        if receiver:
+            cur = self._d365_call(self._d365.apply_check, o["d365_id"])
+            new = {k: str(receiver.get(k) or "").strip() for k in ("receiver", "phone", "address")}
+            if any(new[k] != (cur.get(k) or "").strip() for k in new):
+                missing = [n for n, k in (("收货人", "receiver"), ("收货电话", "phone"), ("收货地址", "address")) if not new[k]]
+                if missing:
+                    raise ValueError("请先填写" + "、".join(missing))
+                self._d365_call(self._d365.set_receiver, o["d365_id"], new["receiver"], new["phone"], new["address"])
+        mid = self._d365_call(self._d365.apply_parts, o["d365_id"])
+        self._sync.sync_parts([o["d365_id"]])
+        res = self.order_parts(oid)
+        mat = next((m for m in res["materials"] if m["id"] == mid), None)
+        return {**res, "material": mat or {"id": mid, "code": ""}}
+
+    def material_check(self, oid, mid):
+        self._d365_order(oid)
+        return self._d365_call(self._d365.material_check, mid)
+
+    def submit_material(self, oid, mid):
+        o = self._d365_order(oid)
+        code = self._d365_call(self._d365.submit_material, mid)
+        self._sync.sync_parts([o["d365_id"]])
+        return {**self.order_parts(oid), "submitted": code}
+
     def refresh_order_parts(self, oid, quiet=False):
         """从 D365 重新读取这一单的配件和借料/归还单。quiet：打开详情时的自动刷新，失败就用本地数据。"""
         o = self._d365_order(oid)

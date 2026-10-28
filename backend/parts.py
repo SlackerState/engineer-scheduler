@@ -8,6 +8,7 @@
   归还被拒      归还申请被拒绝，需要处理
   待归还        工单已经完工/取消，还有剩余配件，但没申请归还  ← 需要提醒
   借用中        工单还没完工，配件可能还会用到
+借料单本身还没批下来时：借料待提交（已创建 / 被拒）· 借料审批中（已提交）· 已取消
 """
 from __future__ import annotations
 
@@ -28,6 +29,13 @@ def _days(created: str) -> int | None:
 
 
 def borrow_state(mat: dict, remaining: float, order_status: str) -> str:
+    st = mat.get("status_code")
+    if st == 60:
+        return "已取消"
+    if st in (10, 40):
+        return "借料待提交"
+    if st == 20:
+        return "借料审批中"
     rc = mat.get("return_code")
     if rc == 50:
         return "已归还"
