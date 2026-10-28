@@ -118,19 +118,22 @@ def schedule_grid(db: DB, start: str, days: int) -> dict:
             "today": date.today().isoformat()}
 
 
-def day_status(db: DB, day: str, slot: str) -> dict:
+def day_status(db: DB, day: str, slot: str = "") -> dict:
+    """某天每位工程师的排班和工单。按整天算：上午下午的排班合成一个（见 pick_day），
+    当天有派单就算外出，上午下午都空闲才算「可派」。slot 参数保留兼容，已不使用。"""
     out = []
     all_jobs = jobs_between(db, day, day)
     for e in db.engineers():
-        raw = db.cell(e["id"], day, slot)
+        raws = [db.cell(e["id"], day, s) for s in SLOTS]
         jobs = [j for j in all_jobs if j["engineer_id"] == e["id"]]
-        n_slot = sum(1 for j in jobs if j["slot"] == slot)
+        n_by = [sum(1 for j in jobs if j["slot"] == s) for s in SLOTS]
+        sched = base_status(pick_day(raws), e["type"])
+        n = len(jobs)
+        status = (f"⚠ {sched}但已派单" if sched in BLOCKING else "外出（已派单）") if n else sched
         out.append({
-            "id": e["id"], "name": e["name"], "type": e["type"],
-            "schedule": base_status(raw, e["type"]),
-            "status": effective_status(raw, e["type"], n_slot),
-            "available": is_available(raw, e["type"], n_slot),
-            "day_count": len(jobs), "slot_count": n_slot, "jobs": jobs,
+            "id": e["id"], "name": e["name"], "type": e["type"], "schedule": sched, "status": status,
+            "available": all(is_available(r, e["type"], k) for r, k in zip(raws, n_by)),
+            "day_count": n, "jobs": jobs,
         })
     # 当天上门的工单（按实际到达 > 出发 > 本地计划；包括人员表以外的工程师）
     engs, s = db.engineers(), db.settings()
@@ -143,9 +146,9 @@ def day_status(db: DB, day: str, slot: str) -> dict:
     for o in orders:
         o.pop("d365_json", None)
         o["local"] = (match_engineer(engs, o["engineer"]) or {}).get("name", "")
-    orders.sort(key=lambda o: (o["visit"]["slot"], o["visit"]["time"] or "99", o["id"]))
+    orders.sort(key=lambda o: (o["visit"]["time"] or "99", o["id"]))
     return {
-        "day": day, "slot": slot, "rows": out, "orders": orders,
+        "day": day, "rows": out, "orders": orders,
         "field_available": sum(1 for r in out if r["type"] == "外勤" and r["available"]),
         "site_on_duty": sum(1 for r in out if r["type"] == "驻点" and r["available"]),
     }
@@ -183,7 +186,7 @@ def mark_out(db: DB, eid: int, day: str, slot: str) -> str:
         return ""
     if cur == "外出":
         return ""
-    return f"排班表上该时段是「{cur}」，未改成外出，请人工确认。"
+    return f"排班表上当天是「{cur}」，未改成外出，请人工确认。"
 
 
 def unmark_out(db: DB, eid: int, day: str, slot: str):
@@ -194,7 +197,6 @@ def unmark_out(db: DB, eid: int, day: str, slot: str):
 
 
 # ---------- 上门时间与超期（预约上门时间 = 考核截止，往往比实际上门晚很多天） ----------
-SLOT_HOUR = {"上午": 9, "下午": 14}
 
 
 def _dt(s: str | None) -> datetime | None:
@@ -243,8 +245,8 @@ def risk_of(o: dict, soon_hours: float = 24, now: datetime | None = None) -> dic
     elif left <= soon_hours:
         out.update(level="soon", text=f"{_span(left)}后超期")
     elif o.get("planned_day"):
-        p = datetime.fromisoformat(o["planned_day"]).replace(hour=SLOT_HOUR.get(o.get("planned_slot") or "上午", 9))
-        if p > appt and not _dt(o.get("setoff_time")):
+        # 计划上门按整天：计划日期晚于截止日期才算「计划晚」
+        if o["planned_day"] > appt.date().isoformat() and not _dt(o.get("setoff_time")):
             out.update(level="plan_late", text="计划晚于预约截止")
     return out
 

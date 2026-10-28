@@ -96,8 +96,7 @@
     <h1>今日查询</h1>
     <div class="tools">
       <input id="t-day" type="date">
-      <select id="t-slot"><option>上午</option><option>下午</option></select>
-      <button id="t-now">现在</button>
+      <button id="t-now">今天</button>
     </div>
   </header>
   <div class="kpis" id="t-kpis"></div>
@@ -175,7 +174,6 @@
       <label class="chk"><input name="d365_to_dispatch" type="checkbox"> 把 D365 工单按上门时间自动排进排班表</label>
       <label class="chk"><input name="auto_sync" type="checkbox"> 自动同步</label>
       <label>自动同步间隔（分钟）<input name="sync_interval_min" type="number" min="1"></label>
-      <label>上午/下午分界（几点算下午）<input name="noon_hour" type="number" min="0" max="23"></label>
       <label>距预约截止不足多少小时算「即将超期」<input name="risk_hours" type="number" min="1"></label>
       <label>浏览器<select name="browser_channel">
         <option value="auto">自动（Windows 用 Edge，Mac 用 Chrome）</option>

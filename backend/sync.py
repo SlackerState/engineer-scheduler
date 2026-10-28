@@ -214,7 +214,7 @@ class Syncer:
                   "VALUES(?,?,?,?,?,?, 'd365', ?)", (day, eid, slot, *info, key))
         warn = logic.mark_out(self.db, eid, day, slot)
         if warn:
-            self._log(f"{o['service_order_no']} {eng['name']} {day} {slot}：{warn}")
+            self._log(f"{o['service_order_no']} {eng['name']} {day}：{warn}")
 
     def rebuild_dispatches(self) -> int:
         """按当前规则重排所有 D365 工单的派单（升级后、改了人员别名后用）。"""

@@ -138,7 +138,7 @@ def export_workbook(db: DB, start: str, days: int) -> bytes:
     s = db.settings()
     for o in db.q("SELECT * FROM orders ORDER BY day DESC, id DESC"):
         logic.enrich(o, s)
-        plan = f"{o['planned_day']} {o['planned_slot']}".strip()
+        plan = o["planned_day"] or ""
         ws.append([o["day"], o["udesk_no"], o["service_order_no"], o["loan_no"], o["customer"], o["serial"],
                    o["problem"], o["engineer"], o["status"], o["progress"], o["d365_status"], o["order_type"],
                    o["appointment"], plan, o["setoff_time"], o["arrival_time"], o["complete_time"], o["risk"]["text"],

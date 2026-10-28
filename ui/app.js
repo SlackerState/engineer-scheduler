@@ -92,7 +92,7 @@ function show(view) {
 
 // 超期风险徽标 / 上门时间（预约上门时间只是考核截止，上门按 到达 > 出发 > 计划）
 const riskBadge = r => r && r.level ? `<span class="badge risk-${r.level}">${esc(r.text)}</span>` : '';
-const visitText = v => v ? `${esc(v.day.slice(5).replace('-', '/'))} ${esc(v.time || v.slot)}<span class="tag src-${esc(v.source)}">${esc(v.source)}</span>` : '';
+const visitText = v => v ? `${esc(v.day.slice(5).replace('-', '/'))} ${esc(v.time || '')}<span class="tag src-${esc(v.source)}">${esc(v.source)}</span>` : '';
 const deadlineHtml = o => o.appointment
   ? `${esc(o.appointment.slice(5).replace('-', '/'))}${o.risk && o.risk.left ? `<div class="muted small">${esc(o.risk.left)}</div>` : ''}` : '<span class="muted">—</span>';
 
@@ -149,7 +149,6 @@ function d365ActionsHtml(o) {
 // 上门安排：本地计划上门（只存软件里），以及 D365 的实际出发/到达和考核截止
 function visitPlanHtml(o) {
   const done = ['已完成', '已取消'].includes(o.status);
-  const slots = S.boot.slots.map(s => `<option ${s === (o.planned_slot || '上午') ? 'selected' : ''}>${s}</option>`).join('');
   return `<div class="card act plan">
     <div class="row"><b>上门安排</b><span class="muted small">排班表按 实际到达 → 出发 → 计划上门 排</span>
       <span style="margin-left:auto">${riskBadge(o.risk)}</span></div>
@@ -157,7 +156,6 @@ function visitPlanHtml(o) {
       ${o.risk && o.risk.left ? `<span class="muted small">${esc(o.risk.left)}</span>` : ''}</div>
     <div class="row"><span class="lbl">计划上门</span>
       <input type="date" id="od-plan-day" value="${esc(o.planned_day || '')}" ${done ? 'disabled' : ''}>
-      <select id="od-plan-slot" ${done ? 'disabled' : ''}>${slots}</select>
       ${done ? '' : `<button id="od-plan-save" style="margin-left:auto">保存计划</button>${o.planned_day ? '<button class="link" id="od-plan-clear">清除</button>' : ''}`}</div>
     <div class="row"><span class="lbl">实际</span><span class="small">出发 ${esc(o.setoff_time) || '—'} · 到达 ${esc(o.arrival_time) || '—'}</span></div>
     <div class="row"><span class="lbl">排班位置</span>${o.visit ? visitText(o.visit) : '<span class="badge risk-pool">待排期</span>'}</div>
@@ -248,7 +246,7 @@ async function openOrder(id) {
   if ($('#od-plan-save')) $('#od-plan-save').onclick = () => safe(async () => {
     const day = $('#od-plan-day').value;
     if (!day) { toast('请先选择计划上门日期', true); return; }
-    await api('set_plan', o.id, day, $('#od-plan-slot').value);
+    await api('set_plan', o.id, day, '上午');
     toast('计划上门已保存，排班表已更新'); reopen();
   });
   if ($('#od-plan-clear')) $('#od-plan-clear').onclick = () => safe(async () => {
@@ -383,7 +381,7 @@ function cellMenu(td, x, y) {
 
 // ======================= 今日查询 =======================
 async function loadToday() {
-  const r = await safe(() => api('day_status', $('#t-day').value, $('#t-slot').value));
+  const r = await safe(() => api('day_status', $('#t-day').value));
   if (!r) return;
   const k = (label, n, unit) => `<div class="kpi ${n === 0 ? 'z' : n === 1 ? 'o' : ''}"><span class="muted">${label}</span><b>${n}</b>${unit}</div>`;
   const rs = await api('risk_summary').catch(() => ({overdue: 0, soon: 0, plan_late: 0, unscheduled: 0}));
@@ -395,17 +393,17 @@ async function loadToday() {
      <div class="kpi click ${rs.unscheduled ? 'o' : ''}" data-goto="待排期" title="点击查看"><span class="muted">待排期</span><b>${rs.unscheduled}</b>单</div>
      <div class="kpi click ${rs.to_return ? 'o' : ''}" data-goto-parts="1" title="点击查看"><span class="muted">待归还借料</span><b>${rs.to_return}</b>张</div>`;
   $('#t-cards').innerHTML = r.rows.map(x => {
-    const cls = x.status.startsWith('⚠') ? 'conflict' : x.slot_count ? 'dispatched' : 'st-' + x.schedule;
+    const cls = x.status.startsWith('⚠') ? 'conflict' : x.day_count ? 'dispatched' : 'st-' + x.schedule;
     return `<div class="eng-card">
       <div class="row"><b>${esc(x.name)}</b><span class="muted small">${esc(x.type)}</span>
         <span class="badge ${cls}" style="margin-left:auto">${esc(x.status)}</span></div>
-      <div class="muted small">排班：${esc(x.schedule)} · 当天 ${x.day_count} 单 · ${esc(r.slot)} ${x.slot_count} 单</div>
+      <div class="muted small">排班：${esc(x.schedule)} · 当天 ${x.day_count} 单</div>
       ${x.jobs.length ? x.jobs.map(jobHtml).join('') : '<div class="muted small job-empty">当天没有工单</div>'}
     </div>`;
   }).join('');
   $('#t-orders').innerHTML = r.orders.length ? `<thead><tr><th>上门</th><th>工程师</th><th>服务订单号</th><th>Udesk 工单号</th>
     <th>客户</th><th>问题</th><th>D365 状态</th><th>预约截止</th><th>设备地址</th></tr></thead><tbody>` + r.orders.map(o => `
-    <tr class="click" data-order="${o.id}"><td class="nowrap">${esc(o.visit.time || o.visit.slot)}<span class="tag src-${esc(o.visit.source)}">${esc(o.visit.source)}</span></td>
+    <tr class="click" data-order="${o.id}"><td class="nowrap">${esc(o.visit.time || '')}<span class="tag src-${esc(o.visit.source)}">${esc(o.visit.source)}</span></td>
       <td class="nowrap">${esc(o.engineer) || '<span class="muted">未派工</span>'}${o.local ? `<span class="tag">${esc(o.local)}</span>` : ''}</td>
       <td class="mono nowrap">${esc(o.service_order_no)}${o.order_type ? `<span class="tag">${esc(o.order_type)}</span>` : ''}</td>
       <td class="mono nowrap">${esc(o.udesk_no)}</td><td>${esc(o.customer)}</td>
@@ -484,7 +482,7 @@ function renderCreatedRows() {
 function jobHtml(j) {
   const no = j.service_order_no || j.order_no;
   return `<div class="job ${j.order_id ? 'click' : ''}" ${j.order_id ? `data-order="${j.order_id}"` : ''}>
-    <div class="row"><span class="tag slot">${esc(j.slot)}</span>
+    <div class="row">
       ${j.visit ? `<span class="small">${esc(j.visit.time)}</span><span class="tag src-${esc(j.visit.source)}">${esc(j.visit.source)}</span>` : ''}
       <b class="mono small">${esc(no) || '无工单号'}</b>${j.udesk_no ? `<span class="mono muted small">${esc(j.udesk_no)}</span>` : ''}
       ${j.d365_status ? `<span class="badge b-${esc(j.order_status)}" style="margin-left:auto">${esc(j.d365_status)}</span>`
@@ -864,7 +862,6 @@ async function init() {
   $('#s-start').value = S.boot.settings.schedule_start;
   $('#s-days').value = String(S.boot.settings.schedule_days || 14);
   $('#t-day').value = S.boot.today;
-  $('#t-slot').value = S.boot.slot_now;
 
   $('#nav').onclick = e => { const a = e.target.closest('a'); if (a) show(a.dataset.view); };
   $('#btn-sync').onclick = startSync;
@@ -930,8 +927,7 @@ async function init() {
 
   // 今日
   $('#t-day').onchange = loadToday;
-  $('#t-slot').onchange = loadToday;
-  $('#t-now').onclick = () => { $('#t-day').value = S.boot.today; $('#t-slot').value = S.boot.slot_now; loadToday(); };
+  $('#t-now').onclick = () => { $('#t-day').value = S.boot.today; loadToday(); };
   $('#c-from').value = addDays(S.boot.today, -7);
   $('#c-from').onchange = loadCreated;
   $('#c-status').onchange = loadCreated;

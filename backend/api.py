@@ -117,8 +117,8 @@ class Api:
         for slot in SLOTS:
             self.set_cell(eid, day, slot, status)
 
-    def day_status(self, day, slot):
-        return logic.day_status(self._db, day, slot)
+    def day_status(self, day, slot=""):
+        return logic.day_status(self._db, day)
 
     # ---------- 派单 ----------
     def check_dispatch(self, form):
