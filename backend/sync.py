@@ -101,7 +101,7 @@ class Syncer:
         if pending:
             recs += self.d365.by_ids(pending)
         new = upd = skipped = 0
-        engineers = self.db.engineers()
+        engineers = self.db.engineers(include_inactive=True)
         synced_ids = []
         for rec in recs:
             row = normalize(rec)
@@ -190,7 +190,7 @@ class Syncer:
         D365 的预约上门时间是考核截止，往往比实际晚很多天，不用来排班。时间变了会自动挪动。"""
         if not o.get("d365_id"):
             return
-        engineers = engineers if engineers is not None else self.db.engineers()
+        engineers = engineers if engineers is not None else self.db.engineers(include_inactive=True)
         key = f"so:{o['d365_id']}"
         old = self.db.q("SELECT * FROM dispatches WHERE booking_id=?", (key,))
         eng = logic.match_engineer(engineers, o["engineer"])
@@ -218,7 +218,7 @@ class Syncer:
 
     def rebuild_dispatches(self) -> int:
         """按当前规则重排所有 D365 工单的派单（升级后、改了人员别名后用）。"""
-        engineers = self.db.engineers()
+        engineers = self.db.engineers(include_inactive=True)
         rows = self.db.q("SELECT * FROM orders WHERE d365_id IS NOT NULL")
         for o in rows:
             self.place_order(o, engineers)

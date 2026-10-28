@@ -13,6 +13,7 @@
   <nav id="nav">
     <a data-view="orders" class="on">订单清单</a>
     <a data-view="schedule">排班表</a>
+    <a data-view="workload">工作量</a>
     <a data-view="today">今日查询</a>
     <a data-view="parts">配件</a>
     <a data-view="people">人员</a>
@@ -72,6 +73,24 @@
   <div class="table-wrap"><table class="grid" id="s-pool"></table></div>
 </section>
 
+<section id="v-workload" class="view">
+  <header class="bar">
+    <h1>工作量</h1>
+    <div class="tools">
+      <div class="seg" id="w-presets">
+        <button data-p="week">本周</button><button data-p="lastweek">上周</button><button data-p="month" class="on">本月</button>
+        <button data-p="lastmonth">上月</button><button data-p="30">近 30 天</button><button data-p="year">今年</button>
+      </div>
+      <input id="w-from" type="date"> 至 <input id="w-to" type="date">
+      <button id="w-export">导出 Excel</button>
+    </div>
+  </header>
+  <p class="muted small note">回看任意时间段每位工程师的排班和工单。上门按 实际到达 → 出发 → 计划上门 算日期（和排班表一致）；现场工时 = 到达 → 现场完工，单次超过 <span id="w-max"></span> 小时的多半是完工没及时提交，不计入工时、单独计数；响应 = 派工 → 到达；超期 = 到达晚于预约上门（考核截止）。点一行看这位工程师的排班日历和工单明细。</p>
+  <div class="kpis" id="w-kpis"></div>
+  <div class="table-wrap"><table class="grid" id="w-table"></table></div>
+  <div id="w-detail"></div>
+</section>
+
 <section id="v-today" class="view">
   <header class="bar">
     <h1>今日查询</h1>
@@ -129,6 +148,7 @@
   </header>
   <p class="muted note">「D365 别名」填 D365 里显示的工程师全名（如 Lee Ryan、Winzar Charles），多个用逗号分隔；不填时按姓名中任一单词自动匹配。类型决定排班表底部统计口径：外勤算「外勤可派」，驻点算「驻点在岗」。</p>
   <div class="table-wrap"><table class="grid" id="p-table"></table></div>
+  <div id="p-off"></div>
 </section>
 
 <section id="v-settings" class="view">

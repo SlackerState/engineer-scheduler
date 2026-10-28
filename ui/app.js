@@ -67,7 +67,7 @@ function show(view) {
   S.view = view;
   $$('#nav a').forEach(a => a.classList.toggle('on', a.dataset.view === view));
   $$('.view').forEach(v => v.classList.toggle('on', v.id === 'v-' + view));
-  ({orders: loadOrders, schedule: loadSchedule, today: loadToday, parts: loadParts,
+  ({orders: loadOrders, schedule: loadSchedule, workload: loadWorkload, today: loadToday, parts: loadParts,
     people: loadPeople, settings: loadSettings})[view]();
 }
 
@@ -301,7 +301,7 @@ async function loadSchedule() {
     return `<th colspan="2" class="day ${d === g.today ? 'today' : ''} ${w % 6 === 0 ? 'wkend' : ''}">${d.slice(5).replace('-', '/')}<small>周${WEEK[w]}</small></th>`;
   }).join('');
   const head2 = g.dates.map(() => '<th>上午</th><th>下午</th>').join('');
-  const body = g.rows.map(r => `<tr><th class="name">${esc(r.name)}</th><td class="type">${esc(r.type)}</td>` +
+  const body = g.rows.map(r => `<tr><th class="name">${esc(r.name)}${r.active ? "" : "<span class=\"tag\">已停用</span>"}</th><td class="type">${esc(r.type)}</td>` +
     g.dates.map(d => S.boot.slots.map((s, i) => {
       const c = r.cells[`${d}|${s}`];
       const shown = c.raw || '';
@@ -604,6 +604,98 @@ async function loadOrderParts(oid, refresh) {
   $$('[data-open]', box).forEach(a => (a.onclick = () => a.dataset.open && api('open_url', a.dataset.open)));
 }
 
+// ======================= 工作量 =======================
+// 预设时间段 → [起, 止]
+function workloadRange(p) {
+  const t = S.boot.today, d = new Date(t + 'T00:00:00'), wd = (d.getDay() + 6) % 7;
+  const mon = addDays(t, -wd), ym = t.slice(0, 8);
+  const lastMonthEnd = addDays(ym + '01', -1);
+  return ({
+    week: [mon, addDays(mon, 6)], lastweek: [addDays(mon, -7), addDays(mon, -1)],
+    month: [ym + '01', addDays(fmtDate(new Date(d.getFullYear(), d.getMonth() + 1, 1)), -1)],
+    lastmonth: [lastMonthEnd.slice(0, 8) + '01', lastMonthEnd], 30: [addDays(t, -29), t], year: [t.slice(0, 5) + '01-01', t],
+  })[p];
+}
+const hrs = v => v == null ? '<span class="muted">—</span>' : `${v}`;
+const SCHED_ORDER = ['外出', '驻点', '在岗', '空闲', '休假', '培训', '休息'];
+
+async function loadWorkload() {
+  if (!$('#w-from').value) { const [a, b] = workloadRange('month'); $('#w-from').value = a; $('#w-to').value = b; }
+  const from = $('#w-from').value, to = $('#w-to').value;
+  if (!from || !to) return;
+  const r = await safe(() => api('workload', from, to));
+  if (!r) return;
+  S.wl = r;
+  $('#w-max').textContent = r.max_onsite_h;
+  const t = r.total, k = (l, v, u, extra = '') => `<div class="kpi"><span class="muted">${l}</span><b>${v}</b>${u} ${extra}</div>`;
+  $('#w-kpis').innerHTML = k('上门工单', t.visits, '单') + k('完工', t.completed, '单') +
+    k('现场工时', t.onsite_h, '小时', t.onsite_long ? `<span class="muted small">另有 ${t.onsite_long} 单超 ${r.max_onsite_h}h 未计</span>` : '') +
+    `<div class="kpi ${t.late ? 'z' : ''}"><span class="muted">超期</span><b>${t.late}</b>单</div>` +
+    k('配件消耗', qty(t.parts_used), '件') + k('收费配件', money(t.charge, r.currency), '');
+  $('#w-table').innerHTML = `<thead><tr><th>工程师</th><th>类型</th><th>上门工单</th><th>上门天数</th><th>完工</th>
+    <th title="到达 → 现场完工">现场工时 (h)</th><th>单均 (h)</th><th title="派工 → 到达">平均响应 (h)</th><th>超期</th>
+    <th>配件消耗</th><th>收费金额</th><th>排班（半天数）</th></tr></thead><tbody>` + (r.rows.length ? r.rows.map(g => {
+      const total = SCHED_ORDER.reduce((n, s) => n + g.sched[s], 0) || 1;
+      const bar = g.in_table ? `<div class="wl-bar">${SCHED_ORDER.filter(s => g.sched[s]).map(s =>
+        `<span class="st-${s}" style="flex:${g.sched[s]}" title="${s} ${g.sched[s]} 个半天"></span>`).join('')}</div>
+        <div class="muted small">${SCHED_ORDER.filter(s => g.sched[s]).map(s => `${s} ${g.sched[s]}`).join(' · ')}</div>`
+        : '<span class="muted small">人员表外（没有排班）</span>';
+      return `<tr class="click ${S.wlKey === g.key ? 'sel' : ''}" data-wk="${esc(g.key)}">
+        <td class="nowrap"><b>${esc(g.name)}</b>${g.active ? '' : '<span class="tag">已停用</span>'}${g.in_table ? '' : '<span class="tag">人员表外</span>'}</td>
+        <td>${esc(g.type)}</td><td><b>${g.visits}</b></td><td>${g.visit_days}</td><td>${g.completed}</td>
+        <td>${g.onsite_h}${g.onsite_long ? ` <span class="muted small" title="单次超过 ${r.max_onsite_h} 小时，未计入">+${g.onsite_long} 单未计</span>` : ''}</td>
+        <td>${hrs(g.onsite_avg)}</td><td>${hrs(g.response_avg)}</td><td class="${g.late ? 'bad' : ''}">${g.late}</td>
+        <td>${qty(g.parts_used)}</td><td class="nowrap">${g.charge ? money(g.charge, r.currency) : '<span class="muted">—</span>'}</td>
+        <td style="min-width:220px">${bar}</td></tr>`;
+    }).join('') : '<tr><td class="empty" colspan="12">这段时间没有数据</td></tr>') + '</tbody>';
+  if (S.wlKey && r.rows.some(g => g.key === S.wlKey)) loadWorkloadDetail(S.wlKey); else { S.wlKey = null; $('#w-detail').innerHTML = ''; }
+}
+
+async function loadWorkloadDetail(key) {
+  S.wlKey = key;
+  $$('#w-table tr[data-wk]').forEach(tr => tr.classList.toggle('sel', tr.dataset.wk === key));
+  const r = await safe(() => api('workload_detail', key, $('#w-from').value, $('#w-to').value));
+  if (!r) return;
+  // 排班日历：一行一周，每天上午/下午两格
+  let cal = '';
+  if (r.calendar.length) {
+    const cells = [...Array(r.calendar[0].weekday).fill(null), ...r.calendar];
+    const weeks = [];
+    for (let i = 0; i < cells.length; i += 7) weeks.push(cells.slice(i, i + 7));
+    cal = `<table class="wl-cal"><thead><tr>${['一', '二', '三', '四', '五', '六', '日'].map(d => `<th>周${d}</th>`).join('')}</tr></thead><tbody>` +
+      weeks.map(w => '<tr>' + [...w, ...Array(7 - w.length).fill(null)].map(c => c ? `<td class="${c.day === S.boot.today ? 'today' : ''}">
+        <div class="d">${esc(c.day.slice(5).replace('-', '/'))}</div>
+        ${S.boot.slots.map(sl => `<div class="half st-${esc(c[sl])}" title="${sl}：${esc(c[sl])}${c[sl + '_n'] ? '，' + c[sl + '_n'] + ' 单' : ''}">
+          ${sl.slice(0, 1)} ${esc(c[sl])}${c[sl + '_n'] > 1 ? ' ×' + c[sl + '_n'] : ''}</div>`).join('')}</td>` : '<td class="blank"></td>').join('') + '</tr>').join('') +
+      '</tbody></table>';
+  }
+  const rows = r.orders;
+  $('#w-detail').innerHTML = `<header class="bar sub"><h2>${esc(r.name)} · ${esc($('#w-from').value)} 至 ${esc($('#w-to').value)}</h2>
+      <span class="muted small">点工单查看详情；排班表也可以往前翻到任意一周</span></header>
+    ${cal || '<p class="muted small">人员表外的工程师没有排班记录，只统计工单。</p>'}
+    <div class="table-wrap"><table class="grid compact"><thead><tr><th>上门</th><th>服务订单号</th><th>Udesk 工单号</th><th>客户</th><th>D365 状态</th>
+      <th>派工</th><th>到达</th><th>现场完工</th><th>现场工时 (h)</th><th>响应 (h)</th><th>预约上门（截止）</th><th>配件消耗</th><th>收费</th></tr></thead><tbody>` +
+    (rows.length ? rows.map(o => `<tr class="click" data-order="${o.id}">
+      <td class="nowrap">${o.visit_in ? visitText(o.visit) : '<span class="muted small">只算完工</span>'}</td>
+      <td class="mono nowrap">${esc(o.service_order_no)}</td><td class="mono nowrap">${esc(o.udesk_no)}</td><td>${esc(o.customer)}</td>
+      <td class="nowrap">${esc(o.d365_status)}</td><td class="nowrap small">${esc(o.dispatch_time)}</td>
+      <td class="nowrap small">${esc(o.arrival_time)}</td><td class="nowrap small">${esc(o.complete_time)}</td>
+      <td>${o.onsite_h == null ? '<span class="muted">—</span>' : o.onsite_long ? `<span class="warn" title="超过 ${r.max_onsite_h} 小时，未计入工时">${o.onsite_h}</span>` : o.onsite_h}</td>
+      <td>${hrs(o.response_h)}</td><td class="nowrap">${esc(o.appointment)}${o.late ? ' ' + riskBadge(o.risk) : ''}</td>
+      <td>${o.parts_used ? qty(o.parts_used) : '<span class="muted">—</span>'}</td>
+      <td class="nowrap">${o.charge ? money(o.charge, o.currency) : '<span class="muted">—</span>'}</td></tr>`).join('')
+      : '<tr><td class="empty" colspan="13">这段时间没有工单</td></tr>') + '</tbody></table></div>';
+}
+
+// 导出：桌面模式已保存到文件；网页模式由浏览器下载
+function saveFile(r) {
+  if (r.saved) { toast('已导出到 ' + r.path); return; }
+  if (!r.b64) return;
+  const a = document.createElement('a');
+  a.href = 'data:application/vnd.openxmlformats-officedocument.spreadsheetml.sheet;base64,' + r.b64;
+  a.download = r.name; a.click();
+}
+
 // ======================= 人员 =======================
 async function loadPeople() {
   await refreshEngineers();
@@ -616,6 +708,12 @@ async function loadPeople() {
     <td><input data-k="aliases" value="${esc(e.aliases)}" placeholder="如 Lee Ryan"></td>
     <td class="nowrap"><button class="link" data-mv="-1">上移</button><button class="link" data-mv="1">下移</button>
       <button class="link danger" data-rm>删除</button></td></tr>`).join('') + '</tbody>';
+  // 已停用（有历史排班的人删除后会停用，保留历史，可恢复）
+  const off = (await api('list_engineers', true)).filter(e => !e.active);
+  $('#p-off').innerHTML = off.length ? `<header class="bar sub"><h2>已停用</h2>
+      <span class="muted small">不再出现在排班表、今日查询里；历史排班和工作量仍保留（工作量页、往前翻排班表都能看到）</span></header>
+    <div class="row chips">${off.map(e => `<span class="off-chip">${esc(e.name)} <span class="muted small">${esc(e.type)}</span>
+      <button class="link" data-restore="${e.id}">恢复</button></span>`).join('')}</div>` : '';
 }
 
 async function savePersonRow(tr) {
@@ -827,13 +925,19 @@ async function init() {
     await safe(() => api('save_engineer', {name: '新工程师' + n, type: '外勤'}));
     loadPeople();
   };
+  $('#p-off').onclick = async e => {
+    const id = e.target.dataset.restore; if (!id) return;
+    await safe(() => api('restore_engineer', +id)); toast('已恢复'); await refreshEngineers(); loadPeople();
+  };
   $('#p-table').onchange = e => { const tr = e.target.closest('tr[data-id]'); if (tr) savePersonRow(tr); };
   $('#p-table').onclick = async e => {
     const tr = e.target.closest('tr[data-id]'); if (!tr) return;
     if (e.target.dataset.mv) { await safe(() => api('move_engineer', +tr.dataset.id, +e.target.dataset.mv)); loadPeople(); }
     if ('rm' in e.target.dataset) {
-      if (!await ask('删除这位工程师？他的排班和派单记录也会一起删除。', '删除')) return;
-      await safe(() => api('delete_engineer', +tr.dataset.id)); loadPeople();
+      if (!await ask('删除这位工程师？\n有排班或派单历史的会改为「停用」：不再出现在排班表里，但历史排班和工作量都保留，之后可以恢复。', '删除')) return;
+      const res = await safe(() => api('delete_engineer', +tr.dataset.id));
+      if (res) toast(res === 'deactivated' ? '已停用，历史排班和工作量已保留' : '已删除');
+      await refreshEngineers(); loadPeople();
     }
   };
 
@@ -858,14 +962,20 @@ async function init() {
     });
     rd.readAsDataURL(file);
   };
-  $('#x-export').onclick = () => safe(async () => {
-    const r = await api('export_excel', $('#s-start').value, Number($('#s-days').value) * 2);
-    if (r.saved) { toast('已导出到 ' + r.path); return; }
-    if (!r.b64) return;
-    const a = document.createElement('a');
-    a.href = 'data:application/vnd.openxmlformats-officedocument.spreadsheetml.sheet;base64,' + r.b64;
-    a.download = r.name; a.click();
-  });
+  $('#x-export').onclick = () => safe(async () => saveFile(await api('export_excel', $('#s-start').value, Number($('#s-days').value) * 2)));
+
+  // 工作量
+  $('#w-presets').onclick = e => {
+    const b = e.target.closest('[data-p]'); if (!b) return;
+    $$('#w-presets button').forEach(x => x.classList.toggle('on', x === b));
+    const [a, c] = workloadRange(b.dataset.p); $('#w-from').value = a; $('#w-to').value = c;
+    loadWorkload();
+  };
+  const wCustom = () => { $$('#w-presets button').forEach(x => x.classList.remove('on')); loadWorkload(); };
+  $('#w-from').onchange = wCustom;
+  $('#w-to').onchange = wCustom;
+  $('#w-table').onclick = e => { const tr = e.target.closest('tr[data-wk]'); if (tr) loadWorkloadDetail(tr.dataset.wk); };
+  $('#w-export').onclick = () => safe(async () => saveFile(await api('export_workload', $('#w-from').value, $('#w-to').value)));
   $('#x-dir').onclick = () => api('open_data_dir');
 
   // 更新

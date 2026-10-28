@@ -65,7 +65,8 @@ CREATE TABLE IF NOT EXISTS engineers (
     type TEXT NOT NULL DEFAULT '外勤',
     phone TEXT DEFAULT '',
     remark TEXT DEFAULT '',
-    aliases TEXT DEFAULT ''
+    aliases TEXT DEFAULT '',
+    active INTEGER NOT NULL DEFAULT 1  -- 0 = 已停用（离职等）：不再出现在排班/人员里，但保留历史排班和工作量
 );
 CREATE TABLE IF NOT EXISTS schedule (
     engineer_id INTEGER NOT NULL REFERENCES engineers(id) ON DELETE CASCADE,
@@ -200,6 +201,9 @@ class DB:
                               ("return_order", "TEXT DEFAULT ''")):
                 if name not in cols:
                     self.conn.execute(f"ALTER TABLE parts ADD COLUMN {name} {ddl}")
+            cols = {r[1] for r in self.conn.execute("PRAGMA table_info(engineers)")}
+            if "active" not in cols:
+                self.conn.execute("ALTER TABLE engineers ADD COLUMN active INTEGER NOT NULL DEFAULT 1")
             cols = {r[1] for r in self.conn.execute("PRAGMA table_info(schedule)")}
             if "auto" not in cols:
                 self.conn.execute("ALTER TABLE schedule ADD COLUMN auto INTEGER NOT NULL DEFAULT 0")
@@ -254,24 +258,43 @@ class DB:
         return self.settings()
 
     # ---------- 人员 ----------
-    def engineers(self) -> list[dict]:
-        return self.q("SELECT * FROM engineers ORDER BY seq, id")
+    def engineers(self, include_inactive: bool = False) -> list[dict]:
+        """include_inactive：连已停用的一起返回（匹配历史工单、回看排班用）。"""
+        where = "" if include_inactive else "WHERE active=1 "
+        return self.q(f"SELECT * FROM engineers {where}ORDER BY seq, id")
 
     def save_engineer(self, e: dict) -> int:
         fields = (e.get("name", "").strip(), e.get("type") or "外勤",
                   e.get("phone", ""), e.get("remark", ""), e.get("aliases", ""))
         if not fields[0]:
             raise ValueError("姓名不能为空")
+        off = self.one("SELECT * FROM engineers WHERE name=? AND active=0", (fields[0],))
         if e.get("id"):
+            if off and off["id"] != int(e["id"]):
+                raise ValueError(f"「{fields[0]}」已停用，请在人员页下方「已停用」里点恢复")
             self.x("UPDATE engineers SET name=?, type=?, phone=?, remark=?, aliases=? WHERE id=?",
                    (*fields, e["id"]))
             return e["id"]
+        if off:  # 同名的已停用人员：恢复启用，接上原来的历史；没填的字段沿用原来的（尤其是 D365 别名，丢了工单就对不上了）
+            self.x("UPDATE engineers SET type=?, phone=?, remark=?, aliases=?, active=1 WHERE id=?",
+                   (e.get("type") or off["type"], e.get("phone") or off["phone"], e.get("remark") or off["remark"],
+                    e.get("aliases") or off["aliases"], off["id"]))
+            return off["id"]
         seq = (self.one("SELECT COALESCE(MAX(seq), 0) + 1 AS n FROM engineers") or {"n": 1})["n"]
         return self.x("INSERT INTO engineers(seq, name, type, phone, remark, aliases) VALUES(?,?,?,?,?,?)",
                       (seq, *fields))
 
-    def delete_engineer(self, eid: int):
+    def delete_engineer(self, eid: int) -> str:
+        """有排班或派单历史的只停用（保留历史），没有历史的直接删除。返回 'deactivated' / 'deleted'。"""
+        if self.one("SELECT 1 AS x FROM schedule WHERE engineer_id=? UNION ALL "
+                    "SELECT 1 FROM dispatches WHERE engineer_id=? LIMIT 1", (eid, eid)):
+            self.x("UPDATE engineers SET active=0 WHERE id=?", (eid,))
+            return "deactivated"
         self.x("DELETE FROM engineers WHERE id=?", (eid,))
+        return "deleted"
+
+    def restore_engineer(self, eid: int):
+        self.x("UPDATE engineers SET active=1 WHERE id=?", (eid,))
 
     def move_engineer(self, eid: int, delta: int):
         rows = self.engineers()

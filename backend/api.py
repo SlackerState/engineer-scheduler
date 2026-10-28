@@ -7,7 +7,7 @@ import threading
 import webbrowser
 from datetime import date, datetime, timedelta
 
-from . import excel_io, logic, parts
+from . import excel_io, logic, parts, workload
 from .browser import Browser, NeedLogin
 from .d365 import D365, normalize
 from .db import DB, ORDER_EDITABLE, ORDER_STATUSES, SLOTS, STATUSES, app_dir
@@ -81,8 +81,8 @@ class Api:
         return self._db.save_settings(data)
 
     # ---------- 人员 ----------
-    def list_engineers(self):
-        return self._db.engineers()
+    def list_engineers(self, include_inactive=False):
+        return self._db.engineers(bool(include_inactive))
 
     def save_engineer(self, data):
         eid = self._db.save_engineer(data)
@@ -90,7 +90,12 @@ class Api:
         return eid
 
     def delete_engineer(self, eid):
-        self._db.delete_engineer(int(eid))
+        res = self._db.delete_engineer(int(eid))
+        self._sync.rebuild_dispatches()
+        return res
+
+    def restore_engineer(self, eid):
+        self._db.restore_engineer(int(eid))
         self._sync.rebuild_dispatches()
 
     def move_engineer(self, eid, delta):
@@ -311,7 +316,7 @@ class Api:
 
     def add_from_d365(self, number):
         recs = self._d365.find(number)
-        engineers = self._db.engineers()
+        engineers = self._db.engineers(include_inactive=True)
         s = self._db.settings()
         for rec in recs:
             row = normalize(rec)
@@ -329,7 +334,7 @@ class Api:
 
     def _refresh_from_d365(self, d365_ids: list[str]):
         """写入后立即从 D365 读回最新数据，并同步派单记录和排班表。"""
-        s, engineers = self._db.settings(), self._db.engineers()
+        s, engineers = self._db.settings(), self._db.engineers(include_inactive=True)
         for rec in self._d365.by_ids(d365_ids):
             row = normalize(rec)
             self._sync.upsert(row, s)
@@ -383,8 +388,11 @@ class Api:
         return excel_io.import_workbook(self._db, base64.b64decode(b64))
 
     def export_excel(self, start, days):
-        data = excel_io.export_workbook(self._db, start, int(days))
-        name = f"工程师排班表_{date.today():%Y%m%d}.xlsx"
+        return self._save_xlsx(excel_io.export_workbook(self._db, start, int(days)),
+                               f"工程师排班表_{date.today():%Y%m%d}.xlsx")
+
+    def _save_xlsx(self, data: bytes, name: str):
+        """桌面模式弹保存对话框；网页模式把内容交给前端下载。"""
         if self._window is not None:
             import webview
             path = self._window.create_file_dialog(webview.SAVE_DIALOG, save_filename=name,
@@ -396,6 +404,17 @@ class Api:
                 f.write(data)
             return {"saved": True, "path": path}
         return {"saved": False, "name": name, "b64": base64.b64encode(data).decode()}
+
+    # ---------- 工作量 ----------
+    def workload(self, day_from, day_to):
+        return workload.summary(self._db, day_from, day_to)
+
+    def workload_detail(self, key, day_from, day_to):
+        return workload.detail(self._db, key, day_from, day_to)
+
+    def export_workload(self, day_from, day_to):
+        return self._save_xlsx(excel_io.export_workload(self._db, day_from, day_to),
+                               f"工程师工作量_{day_from}_{day_to}.xlsx")
 
     def open_data_dir(self):
         webbrowser.open(app_dir().as_uri())

@@ -63,10 +63,12 @@ def jobs_between(db: DB, day_from: str, day_to: str) -> list[dict]:
 def schedule_grid(db: DB, start: str, days: int) -> dict:
     days = max(1, min(int(days), 366))
     dates = _days(start, days)
-    engs = db.engineers()
     raw = {(r["engineer_id"], r["day"], r["slot"]): r["status"]
            for r in db.q("SELECT * FROM schedule WHERE day BETWEEN ? AND ?", (dates[0], dates[-1]))}
     cnt = _dispatch_counts(db, dates[0], dates[-1])
+    # 已停用的人员：这段时间里有排班或派单才显示（回看历史用）
+    has_data = {k[0] for k in raw} | {k[0] for k in cnt}
+    engs = [e for e in db.engineers(include_inactive=True) if e["active"] or e["id"] in has_data]
     jobs: dict = {}
     for j in jobs_between(db, dates[0], dates[-1]):
         jobs.setdefault((j["engineer_id"], j["day"], j["slot"]), []).append({

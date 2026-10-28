@@ -206,3 +206,18 @@ td.st-blank { color: var(--muted); }
 .grid:has(tr.filters) th { position: static; }
 .grid tr.filters th { padding-top: 0; font-weight: 400; }
 .grid tr.filters input, .grid tr.filters select { min-width: 80px; max-width: 170px; font-size: 12px; padding: 3px 5px; }
+
+/* 工作量 */
+.grid tr.sel { background: var(--hover); box-shadow: inset 3px 0 0 var(--accent); }
+.grid td.bad { color: var(--bad); font-weight: 600; }
+.wl-bar { display: flex; height: 10px; border-radius: 5px; overflow: hidden; border: 1px solid var(--line); margin-bottom: 3px; }
+.wl-bar span { display: block; min-width: 3px; }
+.wl-cal { border-collapse: separate; border-spacing: 4px; margin: 4px 0 14px; table-layout: fixed; width: 100%; max-width: 980px; }
+.wl-cal th { font-weight: 500; color: var(--muted); font-size: 12px; text-align: left; padding: 0 4px; }
+.wl-cal td { border: 1px solid var(--line); border-radius: 6px; padding: 4px; vertical-align: top; background: var(--panel); }
+.wl-cal td.blank { border: none; background: none; }
+.wl-cal td.today { border-color: var(--accent); }
+.wl-cal .d { font-size: 11px; color: var(--muted); margin-bottom: 2px; }
+.wl-cal .half { font-size: 11px; border-radius: 3px; padding: 1px 4px; margin-top: 2px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.off-chip { display: inline-flex; gap: 6px; align-items: center; border: 1px solid var(--line); border-radius: 99px; padding: 3px 10px; background: var(--panel); }
+#v-workload > * { flex-shrink: 0; }  /* 整页滚动，表格不被压扁 */
