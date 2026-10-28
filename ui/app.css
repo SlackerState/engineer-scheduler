@@ -221,3 +221,6 @@ td.st-blank { color: var(--muted); }
 .wl-cal .half { font-size: 11px; border-radius: 3px; padding: 1px 4px; margin-top: 2px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .off-chip { display: inline-flex; gap: 6px; align-items: center; border: 1px solid var(--line); border-radius: 99px; padding: 3px 10px; background: var(--panel); }
 #v-workload > * { flex-shrink: 0; }  /* 整页滚动，表格不被压扁 */
+.offline { position: fixed; inset: 0; background: rgba(20,28,44,.55); display: flex; align-items: center; justify-content: center; z-index: 1000; }
+.offline > div { background: var(--panel); border-radius: 10px; padding: 22px 28px; max-width: 380px; box-shadow: 0 10px 40px rgba(0,0,0,.25); }
+.offline b { font-size: 16px; }

@@ -30,6 +30,7 @@ class Api:
         self._sync.rebuild_dispatches()  # 排班规则可能随版本变化，启动时按当前规则重排一次
         self._window = None  # 桌面模式下由 main.py 注入，用于文件对话框
         self._ui_proc = None  # Windows 的 Edge 应用窗口进程，由 main.py 注入
+        self._quitting = False  # 在线更新时置为 True，main.py 不再等页面心跳
 
     # ---------- 基础 ----------
     def bootstrap(self):
@@ -67,7 +68,8 @@ class Api:
             if self._window is not None:
                 self._window.destroy()  # main.py 随后关闭浏览器并退出
             elif self._ui_proc is not None:
-                self._ui_proc.terminate()  # 关掉 Edge 应用窗口，main.py 随后退出
+                self._quitting = True  # main.py 不再等页面心跳
+                self._ui_proc.terminate()  # 关掉 Edge 应用窗口（页面自己也会关窗），main.py 随后退出
             else:
                 self.shutdown()
                 os._exit(0)

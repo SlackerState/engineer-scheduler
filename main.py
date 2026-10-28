@@ -15,6 +15,7 @@ import socket
 import subprocess
 import sys
 import tempfile
+import time
 import traceback
 import webbrowser
 from pathlib import Path
@@ -43,9 +44,42 @@ def find_edge() -> str | None:
     return shutil.which("msedge")
 
 
+def ui_log(msg: str):
+    """Windows 窗口模式的启动/退出记录（数据目录下 ui.log，只留最近 300 行），排查打不开时看。"""
+    try:
+        from backend.db import app_dir
+        f = app_dir() / "ui.log"
+        lines = f.read_text(encoding="utf-8").splitlines()[-299:] if f.exists() else []
+        lines.append(f"{time.strftime('%Y-%m-%d %H:%M:%S')} [{os.getpid()}] {msg}")
+        f.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    except Exception:
+        pass
+
+
+# 页面每 5 秒发一次心跳；Edge 进程退出后，超过这么久没心跳才算窗口真的关了
+UI_IDLE_EXIT = 20
+
+
+def wait_ui_closed(proc, httpd, api):
+    """等 Edge 窗口关闭。Edge 有时会把窗口交给另一个进程后自己先退出（例如后台有 Edge 更新待安装），
+    窗口其实还开着；这时如果直接关掉本地服务，页面就变成「127.0.0.1 无法访问」。所以进程退出后
+    再看页面心跳：还有心跳就继续服务，直到页面关闭（收到 /__bye 且之后没有新请求）或长时间没心跳。"""
+    code = proc.wait()
+    ui_log(f"Edge 进程已退出（退出码 {code}，距上次页面请求 {time.time() - httpd.last_seen:.0f} 秒）")
+    while not getattr(api, "_quitting", False):
+        now = time.time()
+        if httpd.bye_at and httpd.last_seen < httpd.bye_at and now - httpd.bye_at > 3:
+            ui_log("页面已关闭，退出")
+            return
+        if now - httpd.last_seen > UI_IDLE_EXIT:
+            ui_log(f"{UI_IDLE_EXIT} 秒没有页面心跳，退出")
+            return
+        time.sleep(1)
+
+
 def run_edge_window(api, ui: Path) -> bool:
     """Windows：本地服务 + Edge 应用模式窗口（无地址栏），不依赖 .NET / pythonnet。窗口关掉即退出。"""
-    edge = find_edge()
+    edge = os.environ.get("ES_EDGE") or find_edge()  # ES_EDGE：CI 用来模拟 Edge 交接进程
     if not edge:
         return False
     from backend.server import serve
@@ -57,14 +91,23 @@ def run_edge_window(api, ui: Path) -> bool:
         edge, f"--app=http://127.0.0.1:{port}/", f"--user-data-dir={profile}", "--window-size=1400,880",
         "--no-first-run", "--no-default-browser-check", "--disable-sync", "--disable-extensions",
     ])
+    ui_log(f"启动 v{_version()}：端口 {port}，Edge {edge}（进程 {proc.pid}）")
     api._ui_proc = proc
     try:
-        proc.wait()
+        wait_ui_closed(proc, httpd, api)
     finally:
         httpd.shutdown()
         api.shutdown()
         shutil.rmtree(profile, ignore_errors=True)
     return True
+
+
+def _version() -> str:
+    try:
+        from backend.version import __version__
+        return __version__
+    except Exception:
+        return "?"
 
 
 def run_webview(api, ui: Path):

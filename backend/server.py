@@ -4,6 +4,7 @@ from __future__ import annotations
 import json
 import mimetypes
 import threading
+import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
@@ -18,6 +19,11 @@ def serve(api: Api, ui_dir: Path, host: str = "127.0.0.1", port: int = 8765, bac
         def log_message(self, *a):
             pass
 
+        def handle_one_request(self):
+            super().handle_one_request()
+            if getattr(self, "path", "") and not self.path.startswith("/__bye"):
+                self.server.last_seen = time.time()
+
         def _send(self, code: int, body: bytes, ctype: str):
             self.send_response(code)
             self.send_header("Content-Type", ctype)
@@ -27,6 +33,8 @@ def serve(api: Api, ui_dir: Path, host: str = "127.0.0.1", port: int = 8765, bac
             self.wfile.write(body)
 
         def do_GET(self):
+            if self.path.startswith("/__ping"):  # 页面心跳：窗口还开着
+                return self._send(200, b"ok", "text/plain")
             rel = self.path.split("?")[0].lstrip("/") or "index.html"
             f = (ui_dir / rel).resolve()
             if ui_dir.resolve() not in f.parents or not f.is_file():
@@ -40,6 +48,9 @@ def serve(api: Api, ui_dir: Path, host: str = "127.0.0.1", port: int = 8765, bac
             self._send(200, body, ctype)
 
         def do_POST(self):
+            if self.path.startswith("/__bye"):  # 页面关闭（刷新也会发，所以只作为提示，见 main.py）
+                self.server.bye_at = time.time()
+                return self._send(200, b"ok", "text/plain")
             if not self.path.startswith("/api/"):
                 return self._send(404, b"not found", "text/plain")
             method = self.path[5:]
@@ -54,6 +65,7 @@ def serve(api: Api, ui_dir: Path, host: str = "127.0.0.1", port: int = 8765, bac
             self._send(200, json.dumps(body, ensure_ascii=False).encode(), "application/json; charset=utf-8")
 
     httpd = ThreadingHTTPServer((host, port), Handler)
+    httpd.last_seen, httpd.bye_at = time.time(), 0.0  # 最近一次页面请求 / 页面关闭的时间
     if background:
         threading.Thread(target=httpd.serve_forever, name="http", daemon=True).start()
         return httpd

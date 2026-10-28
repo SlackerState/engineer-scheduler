@@ -141,6 +141,39 @@ jobs:
           if (@($edge).Count -eq 0) { Write-Host "没有打开 Edge 窗口"; exit 1 }
           Write-Host "桌面模式启动正常"
 
+      - name: 冒烟测试（Windows：Edge 启动进程先退出，窗口仍要能用）
+        if: runner.os == 'Windows'
+        shell: pwsh
+        timeout-minutes: 5
+        run: |
+          # 模拟 Edge 把窗口交给另一个进程后自己先退出：启动器拉起真正的 Edge 就结束
+          $edgeExe = @("${env:ProgramFiles(x86)}\Microsoft\Edge\Application\msedge.exe", "$env:ProgramFiles\Microsoft\Edge\Application\msedge.exe") | Where-Object { Test-Path $_ } | Select-Object -First 1
+          $launcher = Join-Path $env:RUNNER_TEMP "fake-edge.cmd"
+          Set-Content -Path $launcher -Encoding ascii -Value "@start `"`" `"$edgeExe`" %*"
+          $env:ES_DATA_DIR = Join-Path $env:RUNNER_TEMP "es-data-handoff"
+          $env:ES_PORT = "8767"
+          $env:ES_EDGE = $launcher
+          $exe = Join-Path (Get-Location) "dist\$env:APP_NAME\$env:APP_NAME.exe"
+          $p = Start-Process -FilePath $exe -PassThru
+          $ok = $false
+          for ($i = 0; $i -lt 45; $i++) {
+            if ($p.HasExited) { break }
+            try { $r = Invoke-RestMethod -Method Post -Uri "http://127.0.0.1:8767/api/bootstrap" -Body "[]" -TimeoutSec 5; if ($r.ok) { $ok = $true; break } } catch { Start-Sleep -Seconds 2 }
+          }
+          if (-not $ok) { Write-Host "没有启动"; Get-Content (Join-Path $env:ES_DATA_DIR "ui.log") -ErrorAction SilentlyContinue; exit 1 }
+          Start-Sleep -Seconds 35  # 超过 20 秒无心跳就会退出：还活着说明页面心跳在维持服务
+          $alive = -not $p.HasExited
+          try { $r = Invoke-RestMethod -Method Post -Uri "http://127.0.0.1:8767/api/bootstrap" -Body "[]" -TimeoutSec 5; $served = [bool]$r.ok } catch { $served = $false }
+          Write-Host "---- ui.log ----"; Get-Content (Join-Path $env:ES_DATA_DIR "ui.log")
+          Write-Host "启动进程退出 35 秒后：程序在运行 $alive，页面服务正常 $served"
+          $edge = Get-CimInstance Win32_Process -Filter "Name = 'msedge.exe'" | Where-Object { $_.CommandLine -like "*es-ui-*" }
+          $edge | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
+          $exited = $p.WaitForExit(40000)
+          Write-Host "关掉 Edge 窗口后程序自行退出：$exited"
+          if (-not $exited) { Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue }
+          if (-not ($alive -and $served -and $exited)) { exit 1 }
+          Write-Host "Edge 交接场景正常"
+
       - name: 压缩（Mac）
         if: runner.os == 'macOS'
         run: ditto -c -k --keepParent "dist/$APP_NAME.app" "${{ matrix.artifact }}.zip"

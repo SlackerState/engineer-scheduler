@@ -17,6 +17,25 @@ async function api(method, ...args) {
 }
 
 // ---------- 小工具 ----------
+// 网页/Edge 窗口模式：每 5 秒心跳，让后台知道窗口还开着；后台连不上时给出明确提示，而不是一片空白
+if (!isDesktop) {
+  let fails = 0;
+  setInterval(async () => {
+    try {
+      const r = await fetch('/__ping', {cache: 'no-store'});
+      if (!r.ok) throw new Error(r.status);
+      fails = 0; const o = document.getElementById('offline'); if (o) o.remove();
+    } catch (_) {
+      if (++fails >= 2 && !document.getElementById('offline')) {
+        document.body.insertAdjacentHTML('beforeend', `<div id="offline" class="offline"><div>
+          <b>软件后台已退出</b><p>请关闭这个窗口，再重新打开「工程师排班管理」。</p>
+          <button onclick="window.close()">关闭窗口</button></div></div>`);
+      }
+    }
+  }, 5000);
+  addEventListener('pagehide', () => { try { navigator.sendBeacon('/__bye'); } catch (_) {} });
+}
+
 const $ = (s, el = document) => el.querySelector(s);
 const $$ = (s, el = document) => [...el.querySelectorAll(s)];
 const esc = v => String(v ?? '').replace(/[&<>"']/g, c => ({'&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'}[c]));
@@ -827,6 +846,7 @@ function updateDialog() {
         if (!await safe(() => api('update_apply'))) return;
         $('#ud-body', box).innerHTML = '<div>正在关闭并更新，几秒后新版本会自动打开…</div>';
         $('#ud-actions', box).innerHTML = '';
+        if (!isDesktop) setTimeout(() => window.close(), 1500);  // Edge 窗口：旧窗口自己关掉
       }
     });
     poll();
