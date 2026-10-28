@@ -6,7 +6,8 @@
 - 现场工时：到达 → 现场完工，单次超过 MAX_ONSITE_H 的多半是完工没及时提交，不计入，单独计数
 - 响应：派工 → 到达
 - 超期：到达晚于预约上门时间（考核截止），或至今未到达且已过截止
-- 排班：每个半天一格，有派单算「外出」，否则按排班表的状态（留空 = 外勤空闲 / 驻点在岗）
+- 排班：只算工作日（周一到周五），按整天算：当天有派单算「外出」，否则按排班表的状态（留空 = 外勤空闲 /
+  驻点在岗）；上午下午不一样时按 DAY_PRIORITY 取一个。周末的上门工单照样计入工单数和工时，另计「周末上门」
 """
 from __future__ import annotations
 
@@ -18,6 +19,8 @@ from .db import DB, SLOTS
 MAX_ONSITE_H = 12
 MAX_DAYS = 400
 SCHED_KEYS = ("外出", "驻点", "在岗", "空闲", "休假", "培训", "休息")
+# 上午下午状态不同时，整天算哪个（靠前的优先）
+DAY_PRIORITY = ("外出", "驻点", "培训", "休假", "休息", "在岗", "空闲")
 
 
 def _hours(a: str, b: str) -> float | None:
@@ -95,10 +98,22 @@ def _cell(sched: dict, e: dict, day: str, slot: str) -> tuple[str, int]:
     return ("外出" if n else logic.base_status(raw, e["type"])), n
 
 
+def _day(sched: dict, e: dict, day: str) -> tuple[str, int]:
+    """整天的排班状态和派单数。"""
+    cells = [_cell(sched, e, day, sl) for sl in SLOTS]
+    sts = [c[0] for c in cells]
+    st = next((x for x in DAY_PRIORITY if x in sts), sts[0])
+    return st, sum(c[1] for c in cells)
+
+
+def _workdays(days: list[str]) -> list[str]:
+    return [d for d in days if date.fromisoformat(d).weekday() < 5]
+
+
 def _blank(name: str, typ: str, key: str, active: bool) -> dict:
     return {"key": key, "name": name, "type": typ, "active": active, "in_table": key.startswith("e"),
             "visits": 0, "visit_days": 0, "completed": 0, "onsite_h": 0.0, "onsite_n": 0, "onsite_long": 0,
-            "response_sum": 0.0, "response_n": 0, "late": 0, "parts_used": 0.0, "charge": 0.0,
+            "response_sum": 0.0, "response_n": 0, "late": 0, "parts_used": 0.0, "charge": 0.0, "weekend_visits": 0,
             "sched": {k: 0 for k in SCHED_KEYS}, "_days": set()}
 
 
@@ -110,11 +125,10 @@ def summary(db: DB, day_from: str, day_to: str) -> dict:
     groups: dict[str, dict] = {}
     for e in engs:
         g = _blank(e["name"], e["type"], f"e{e['id']}", bool(e["active"]))
-        for d in days:
-            for sl in SLOTS:
-                st, _ = _cell(sched, e, d, sl)
-                if st in g["sched"]:
-                    g["sched"][st] += 1
+        for d in _workdays(days):
+            st, _ = _day(sched, e, d)
+            if st in g["sched"]:
+                g["sched"][st] += 1
         groups[g["key"]] = g
     currency = ""
     for o in orders:
@@ -123,6 +137,7 @@ def summary(db: DB, day_from: str, day_to: str) -> dict:
         if o["visit_in"]:
             g["visits"] += 1
             g["_days"].add(o["visit"]["day"])
+            g["weekend_visits"] += date.fromisoformat(o["visit"]["day"]).weekday() >= 5
             if o["onsite_h"] is not None:
                 if o["onsite_long"]:
                     g["onsite_long"] += 1
@@ -153,14 +168,15 @@ def summary(db: DB, day_from: str, day_to: str) -> dict:
     order = {f"e{e['id']}": i for i, e in enumerate(engs)}
     rows.sort(key=lambda g: (not g["in_table"], order.get(g["key"], 0), -g["visits"], g["name"]))
     tot = {k: sum(r[k] for r in rows) for k in ("visits", "completed", "onsite_h", "onsite_long", "late",
-                                                 "parts_used", "charge")}
+                                                 "parts_used", "charge", "weekend_visits")}
     tot["onsite_h"], tot["charge"] = round(tot["onsite_h"], 1), round(tot["charge"], 2)
-    return {"from": days[0], "to": days[-1], "days": len(days), "truncated": len(days) == MAX_DAYS,
+    return {"from": days[0], "to": days[-1], "days": len(days), "workdays": len(_workdays(days)),
+            "truncated": len(days) == MAX_DAYS,
             "rows": rows, "total": tot, "currency": currency, "max_onsite_h": MAX_ONSITE_H}
 
 
 def detail(db: DB, key: str, day_from: str, day_to: str) -> dict:
-    """一位工程师在这段时间的工单明细和每个半天的排班。key 同 summary 里的 key。"""
+    """一位工程师在这段时间的工单明细和每个工作日的排班。key 同 summary 里的 key。"""
     days = _range(day_from, day_to)
     engs = db.engineers(include_inactive=True)
     orders = [o for o in _orders(db, days) if _key(engs, o["engineer"])[0] == key]
@@ -168,11 +184,9 @@ def detail(db: DB, key: str, day_from: str, day_to: str) -> dict:
     cal = []
     if e:
         sched = _schedule(db, days)
-        for d in days:
-            row = {"day": d, "weekday": date.fromisoformat(d).weekday()}
-            for sl in SLOTS:
-                row[sl], row[sl + "_n"] = _cell(sched, e, d, sl)
-            cal.append(row)
+        for d in _workdays(days):
+            st, n = _day(sched, e, d)
+            cal.append({"day": d, "weekday": date.fromisoformat(d).weekday(), "status": st, "n": n})
     return {"key": key, "name": e["name"] if e else key[2:], "orders": orders, "calendar": cal,
             "max_onsite_h": MAX_ONSITE_H}
 
@@ -191,6 +205,7 @@ def export_rows(db: DB, day_from: str, day_to: str) -> dict:
     for e in engs:
         if not any(r["key"] == f"e{e['id']}" for r in sm["rows"]):
             continue
-        for d in days:
-            cal.append([d, e["name"]] + [_cell(sched, e, d, sl)[0] for sl in SLOTS])
+        for d in _workdays(days):
+            st, n = _day(sched, e, d)
+            cal.append([d, "一二三四五"[date.fromisoformat(d).weekday()], e["name"], st, n or None])
     return {"summary": sm, "orders": orders, "calendar": cal}

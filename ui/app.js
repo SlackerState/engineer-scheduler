@@ -650,23 +650,26 @@ async function loadWorkload() {
   $('#w-kpis').innerHTML = k('上门工单', t.visits, '单') + k('完工', t.completed, '单') +
     k('现场工时', t.onsite_h, '小时', t.onsite_long ? `<span class="muted small">另有 ${t.onsite_long} 单超 ${r.max_onsite_h}h 未计</span>` : '') +
     `<div class="kpi ${t.late ? 'z' : ''}"><span class="muted">超期</span><b>${t.late}</b>单</div>` +
+    k('周末上门', t.weekend_visits, '单', '<span class="muted small">已含在上门工单里</span>') +
     k('配件消耗', qty(t.parts_used), '件') + k('收费配件', money(t.charge, r.currency), '');
   $('#w-table').innerHTML = `<thead><tr><th>工程师</th><th>类型</th><th>上门工单</th><th>上门天数</th><th>完工</th>
     <th title="到达 → 现场完工">现场工时 (h)</th><th>单均 (h)</th><th title="派工 → 到达">平均响应 (h)</th><th>超期</th>
-    <th>配件消耗</th><th>收费金额</th><th>排班（半天数）</th></tr></thead><tbody>` + (r.rows.length ? r.rows.map(g => {
+    <th title="已含在上门工单里">周末上门</th><th>配件消耗</th><th>收费金额</th>
+    <th title="只算工作日，按整天算">排班（${r.workdays} 个工作日）</th></tr></thead><tbody>` + (r.rows.length ? r.rows.map(g => {
       const total = SCHED_ORDER.reduce((n, s) => n + g.sched[s], 0) || 1;
       const bar = g.in_table ? `<div class="wl-bar">${SCHED_ORDER.filter(s => g.sched[s]).map(s =>
-        `<span class="st-${s}" style="flex:${g.sched[s]}" title="${s} ${g.sched[s]} 个半天"></span>`).join('')}</div>
-        <div class="muted small">${SCHED_ORDER.filter(s => g.sched[s]).map(s => `${s} ${g.sched[s]}`).join(' · ')}</div>`
+        `<span class="st-${s}" style="flex:${g.sched[s]}" title="${s} ${g.sched[s]} 天"></span>`).join('')}</div>
+        <div class="muted small">${SCHED_ORDER.filter(s => g.sched[s]).map(s => `${s} ${g.sched[s]} 天`).join(' · ')}</div>`
         : '<span class="muted small">人员表外（没有排班）</span>';
       return `<tr class="click ${S.wlKey === g.key ? 'sel' : ''}" data-wk="${esc(g.key)}">
         <td class="nowrap"><b>${esc(g.name)}</b>${g.active ? '' : '<span class="tag">已停用</span>'}${g.in_table ? '' : '<span class="tag">人员表外</span>'}</td>
         <td>${esc(g.type)}</td><td><b>${g.visits}</b></td><td>${g.visit_days}</td><td>${g.completed}</td>
         <td>${g.onsite_h}${g.onsite_long ? ` <span class="muted small" title="单次超过 ${r.max_onsite_h} 小时，未计入">+${g.onsite_long} 单未计</span>` : ''}</td>
         <td>${hrs(g.onsite_avg)}</td><td>${hrs(g.response_avg)}</td><td class="${g.late ? 'bad' : ''}">${g.late}</td>
+        <td>${g.weekend_visits || '<span class="muted">0</span>'}</td>
         <td>${qty(g.parts_used)}</td><td class="nowrap">${g.charge ? money(g.charge, r.currency) : '<span class="muted">—</span>'}</td>
         <td style="min-width:220px">${bar}</td></tr>`;
-    }).join('') : '<tr><td class="empty" colspan="12">这段时间没有数据</td></tr>') + '</tbody>';
+    }).join('') : '<tr><td class="empty" colspan="13">这段时间没有数据</td></tr>') + '</tbody>';
   if (S.wlKey && r.rows.some(g => g.key === S.wlKey)) loadWorkloadDetail(S.wlKey); else { S.wlKey = null; $('#w-detail').innerHTML = ''; }
 }
 
@@ -675,18 +678,20 @@ async function loadWorkloadDetail(key) {
   $$('#w-table tr[data-wk]').forEach(tr => tr.classList.toggle('sel', tr.dataset.wk === key));
   const r = await safe(() => api('workload_detail', key, $('#w-from').value, $('#w-to').value));
   if (!r) return;
-  // 排班日历：一行一周，每天上午/下午两格
+  // 排班日历：一行一周，只列工作日，每天一格
   let cal = '';
   if (r.calendar.length) {
-    const cells = [...Array(r.calendar[0].weekday).fill(null), ...r.calendar];
     const weeks = [];
-    for (let i = 0; i < cells.length; i += 7) weeks.push(cells.slice(i, i + 7));
-    cal = `<table class="wl-cal"><thead><tr>${['一', '二', '三', '四', '五', '六', '日'].map(d => `<th>周${d}</th>`).join('')}</tr></thead><tbody>` +
-      weeks.map(w => '<tr>' + [...w, ...Array(7 - w.length).fill(null)].map(c => c ? `<td class="${c.day === S.boot.today ? 'today' : ''}">
+    for (const c of r.calendar) {
+      const mon = addDays(c.day, -c.weekday);
+      if (!weeks.length || weeks[weeks.length - 1].mon !== mon) weeks.push({mon, days: Array(5).fill(null)});
+      weeks[weeks.length - 1].days[c.weekday] = c;
+    }
+    cal = `<table class="wl-cal"><thead><tr>${['一', '二', '三', '四', '五'].map(d => `<th>周${d}</th>`).join('')}</tr></thead><tbody>` +
+      weeks.map(w => '<tr>' + w.days.map(c => c ? `<td class="${c.day === S.boot.today ? 'today' : ''}">
         <div class="d">${esc(c.day.slice(5).replace('-', '/'))}</div>
-        ${S.boot.slots.map(sl => `<div class="half st-${esc(c[sl])}" title="${sl}：${esc(c[sl])}${c[sl + '_n'] ? '，' + c[sl + '_n'] + ' 单' : ''}">
-          ${sl.slice(0, 1)} ${esc(c[sl])}${c[sl + '_n'] > 1 ? ' ×' + c[sl + '_n'] : ''}</div>`).join('')}</td>` : '<td class="blank"></td>').join('') + '</tr>').join('') +
-      '</tbody></table>';
+        <div class="half st-${esc(c.status)}" title="${esc(c.status)}${c.n ? '，' + c.n + ' 单' : ''}">${esc(c.status)}${c.n ? ` · ${c.n} 单` : ''}</div></td>`
+        : '<td class="blank"></td>').join('') + '</tr>').join('') + '</tbody></table>';
   }
   const rows = r.orders;
   $('#w-detail').innerHTML = `<header class="bar sub"><h2>${esc(r.name)} · ${esc($('#w-from').value)} 至 ${esc($('#w-to').value)}</h2>

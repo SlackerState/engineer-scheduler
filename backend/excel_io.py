@@ -190,44 +190,45 @@ def export_workload(db: DB, day_from: str, day_to: str) -> bytes:
     ws.title = "工作量汇总"
     sched_cols = list(workload.SCHED_KEYS)
     _header(ws, ["工程师", "类型", "上门工单", "上门天数", "完工", "现场工时(h)", "单均工时(h)",
-                 f"超 {sm['max_onsite_h']}h 未计", "平均响应(h)", "超期", "配件消耗(件)", "收费金额"]
-            + [f"{k}(半天)" for k in sched_cols])
+                 f"超 {sm['max_onsite_h']}h 未计", "平均响应(h)", "超期", "周末上门", "配件消耗(件)", "收费金额"]
+            + [f"{k}(天)" for k in sched_cols])
     for r in sm["rows"]:
         name = r["name"] + ("（已停用）" if not r["active"] else "") + ("（人员表外）" if not r["in_table"] else "")
         ws.append([name, r["type"], r["visits"], r["visit_days"], r["completed"], r["onsite_h"], r["onsite_avg"],
-                   r["onsite_long"], r["response_avg"], r["late"], r["parts_used"], r["charge"]]
+                   r["onsite_long"], r["response_avg"], r["late"], r["weekend_visits"], r["parts_used"], r["charge"]]
                   + ([r["sched"][k] for k in sched_cols] if r["in_table"] else [""] * len(sched_cols)))
     t = sm["total"]
     ws.append(["合计", "", t["visits"], "", t["completed"], t["onsite_h"], "", t["onsite_long"], "", t["late"],
-               t["parts_used"], t["charge"]])
+               t["weekend_visits"], t["parts_used"], t["charge"]])
     for c in ws[ws.max_row]:
         c.font = Font(bold=True)
     ws.append([])
     ws.append([f"统计区间 {sm['from']} 至 {sm['to']}（{sm['days']} 天）；上门按 实际到达 > 出发 > 计划上门；"
-               f"现场工时 = 到达 → 现场完工，单次超过 {sm['max_onsite_h']} 小时的不计入"])
+               f"现场工时 = 到达 → 现场完工，单次超过 {sm['max_onsite_h']} 小时的不计入；"
+               f"排班只算工作日（{sm['workdays']} 天），按整天算，当天有派单算外出"])
     ws.column_dimensions["A"].width = 26
-    for i in range(2, 13 + len(sched_cols)):
+    for i in range(2, 14 + len(sched_cols)):
         ws.column_dimensions[get_column_letter(i)].width = 11
 
     ws = wb.create_sheet("工单明细")
-    _header(ws, ["工程师", "上门日期", "时段", "上门时间来源", "服务订单号", "Udesk 工单号", "客户", "D365 状态",
+    _header(ws, ["工程师", "上门日期", "上门时间来源", "服务订单号", "Udesk 工单号", "客户", "D365 状态",
                  "派工", "到达", "现场完工", "现场工时(h)", "响应(h)", "预约上门（考核截止）", "超期", "配件消耗(件)", "收费金额"])
     for o in data["orders"]:
         v = o["visit"] or {}
-        ws.append([o["local"], v.get("day", ""), v.get("slot", ""), v.get("source", ""), o["service_order_no"],
+        ws.append([o["local"], v.get("day", ""), v.get("source", ""), o["service_order_no"],
                    o["udesk_no"], o["customer"], o["d365_status"], o["dispatch_time"], o["arrival_time"],
                    o["complete_time"], o["onsite_h"], o["response_h"], o["appointment"],
                    o["risk"]["text"] if o["late"] else "", o["parts_used"], o["charge"]])
-    for i, w in enumerate([18, 11, 6, 10, 13, 12, 26, 10, 16, 16, 16, 10, 8, 18, 16, 10, 10], 1):
+    for i, w in enumerate([18, 11, 10, 13, 12, 26, 10, 16, 16, 16, 10, 8, 18, 16, 10, 10], 1):
         ws.column_dimensions[get_column_letter(i)].width = w
 
     ws = wb.create_sheet("排班明细")
-    _header(ws, ["日期", "工程师"] + list(SLOTS))
+    _header(ws, ["日期", "星期", "工程师", "排班", "工单数"])
     for line in data["calendar"]:
         ws.append(line)
-        for cell in ws[ws.max_row][2:]:
-            cell.fill = PatternFill("solid", fgColor=FILLS.get(cell.value, "FFFFFF"))
-    ws.column_dimensions["A"].width, ws.column_dimensions["B"].width = 12, 18
+        c = ws[ws.max_row][3]
+        c.fill = PatternFill("solid", fgColor=FILLS.get(c.value, "FFFFFF"))
+    ws.column_dimensions["A"].width, ws.column_dimensions["C"].width = 12, 18
     buf = io.BytesIO()
     wb.save(buf)
     return buf.getvalue()

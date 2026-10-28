@@ -212,7 +212,7 @@ td.st-blank { color: var(--muted); }
 .grid td.bad { color: var(--bad); font-weight: 600; }
 .wl-bar { display: flex; height: 10px; border-radius: 5px; overflow: hidden; border: 1px solid var(--line); margin-bottom: 3px; }
 .wl-bar span { display: block; min-width: 3px; }
-.wl-cal { border-collapse: separate; border-spacing: 4px; margin: 4px 0 14px; table-layout: fixed; width: 100%; max-width: 980px; }
+.wl-cal { border-collapse: separate; border-spacing: 4px; margin: 4px 0 14px; table-layout: fixed; width: 100%; max-width: 760px; }
 .wl-cal th { font-weight: 500; color: var(--muted); font-size: 12px; text-align: left; padding: 0 4px; }
 .wl-cal td { border: 1px solid var(--line); border-radius: 6px; padding: 4px; vertical-align: top; background: var(--panel); }
 .wl-cal td.blank { border: none; background: none; }

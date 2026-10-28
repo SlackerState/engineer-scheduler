@@ -85,7 +85,7 @@
       <button id="w-export">导出 Excel</button>
     </div>
   </header>
-  <p class="muted small note">回看任意时间段每位工程师的排班和工单。上门按 实际到达 → 出发 → 计划上门 算日期（和排班表一致）；现场工时 = 到达 → 现场完工，单次超过 <span id="w-max"></span> 小时的多半是完工没及时提交，不计入工时、单独计数；响应 = 派工 → 到达；超期 = 到达晚于预约上门（考核截止）。点一行看这位工程师的排班日历和工单明细。</p>
+  <p class="muted small note">回看任意时间段每位工程师的排班和工单。上门按 实际到达 → 出发 → 计划上门 算日期（和排班表一致）；现场工时 = 到达 → 现场完工，单次超过 <span id="w-max"></span> 小时的多半是完工没及时提交，不计入工时、单独计数；响应 = 派工 → 到达；超期 = 到达晚于预约上门（考核截止）。排班只算工作日、按整天算：当天有派单算外出，否则看排班表；周末的上门工单照样计入工单数和工时。点一行看这位工程师的排班日历和工单明细。</p>
   <div class="kpis" id="w-kpis"></div>
   <div class="table-wrap"><table class="grid" id="w-table"></table></div>
   <div id="w-detail"></div>
