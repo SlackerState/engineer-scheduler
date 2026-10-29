@@ -1,4 +1,4 @@
-"""工程师排班管理 —— 入口。
+"""工单工作台 —— 入口（程序文件名仍叫「工程师排班管理」，旧版本的在线更新按这个名字找新程序）。
 
   python main.py            打开桌面窗口（Windows 用 Edge 应用窗口，Mac 用 WKWebView）
   python main.py --web      网页模式，浏览器访问 http://127.0.0.1:8765
@@ -112,7 +112,7 @@ def _version() -> str:
 
 def run_webview(api, ui: Path):
     import webview
-    window = webview.create_window("工程师排班管理", str(ui / "index.html"), js_api=api,
+    window = webview.create_window("工单工作台", str(ui / "index.html"), js_api=api,
                                    width=1400, height=880, min_size=(1000, 640))
     api._window = window
     try:

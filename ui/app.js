@@ -28,7 +28,7 @@ if (!isDesktop) {
     } catch (_) {
       if (++fails >= 2 && !document.getElementById('offline')) {
         document.body.insertAdjacentHTML('beforeend', `<div id="offline" class="offline"><div>
-          <b>软件后台已退出</b><p>请关闭这个窗口，再重新打开「工程师排班管理」。</p>
+          <b>软件后台已退出</b><p>请关闭这个窗口，再重新打开「工单工作台」。</p>
           <button onclick="window.close()">关闭窗口</button></div></div>`);
       }
     }

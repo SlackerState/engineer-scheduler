@@ -115,12 +115,12 @@ class Updater:
             if sys.platform == "darwin":
                 # ditto 能保留 .app 里的符号链接和可执行权限
                 subprocess.run(["ditto", "-x", "-k", str(zpath), str(out)], check=True)
-                self._new_path = out / f"{APP_NAME}.app"
+                self._new_path = _find_program(out, ".app")
             else:
                 with zipfile.ZipFile(zpath) as z:
                     z.extractall(out)
-                self._new_path = out / APP_NAME
-            if not self._new_path.exists():
+                self._new_path = _find_program(out, "")
+            if not self._new_path or not self._new_path.exists():
                 raise RuntimeError("安装包内容不对，没有找到程序")
             self.state.update(phase="ready", progress=100,
                               message="新版本已下载，点「立即重启更新」完成更新")
@@ -142,7 +142,7 @@ class Updater:
         if sys.platform == "win32":
             # 不用 PowerShell 脚本（公司电脑常被组策略禁止运行脚本）：
             # 直接启动新版本自己的 exe，进入 --apply-update 模式，由它等本程序退出后把自己复制过去
-            new_exe = self._new_path / f"{APP_NAME}.exe"
+            new_exe = _exe_in(self._new_path)
             _log(f"启动新版本完成替换：{new_exe} -> {dst}（旧进程 {pid}）")
             flags = 0x00000008 | 0x00000200  # DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP
             subprocess.Popen([str(new_exe), "--apply-update", str(pid), str(dst)], cwd=str(self._new_path),
@@ -188,6 +188,26 @@ class Updater:
 
 
 # ---------- Windows：新版本 exe 以 --apply-update 模式运行，完成替换 ----------
+def _exe_in(folder: Path) -> Path:
+    """程序文件夹里的主程序：优先 APP_NAME.exe，找不到就用文件夹里唯一的 exe（以后改了程序名也能更新）。"""
+    exe = folder / f"{APP_NAME}.exe"
+    if exe.exists():
+        return exe
+    exes = sorted(folder.glob("*.exe"))
+    return exes[0] if exes else exe
+
+
+def _find_program(out: Path, suffix: str) -> Path | None:
+    """解压出来的新版本：Mac 是 *.app，Windows 是含 exe 的文件夹；优先叫 APP_NAME 的。"""
+    first = out / (APP_NAME + suffix)
+    if first.exists():
+        return first
+    for p in sorted(out.iterdir()) if out.exists() else []:
+        if p.is_dir() and (p.name.endswith(".app") if suffix else any(p.glob("*.exe"))):
+            return p
+    return None
+
+
 def stage_dir() -> Path:
     """Windows 下载解压新版本的位置（本机目录，不放漫游配置里）。"""
     base = os.environ.get("LOCALAPPDATA") or tempfile.gettempdir()
@@ -254,7 +274,7 @@ def finish_windows_update(pid: int, target: str) -> None:
             json.dumps({"ok": ok, "message": msg, "version": __version__}, ensure_ascii=False), encoding="utf-8")
     except Exception:
         pass
-    exe = dst / f"{APP_NAME}.exe"
+    exe = _exe_in(dst)
     try:
         subprocess.Popen([str(exe)], cwd=str(dst), creationflags=0x00000008 | 0x00000200, close_fds=True)
         _log(f"已重新打开：{exe}")
