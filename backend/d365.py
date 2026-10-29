@@ -309,6 +309,10 @@ class D365:
                                 body={"mcs_orderstatus": 20}, headers={"If-Match": "*"})
         return chk["code"]
 
+    def progress_for(self, order_ids: list[str]) -> list[dict]:
+        return [normalize_progress(r) for r in
+                self._by_orders("mcs_serviceorderprocessingprogresses", PROGRESS_SELECT, "_mcs_serviceorder_value", order_ids)]
+
     def materials_for(self, order_ids: list[str]) -> list[dict]:
         return [normalize_material(r) for r in
                 self._by_orders("mcs_repairmaterialorders", MATERIAL_SELECT, "_mcs_serviceorderid_value", order_ids)]
@@ -399,6 +403,8 @@ MATERIAL_SELECT = [
     "mcs_returnmaterialstatus", "mcs_shipmentstatus", "_mcs_borroworder_value", "mcs_orderreason",
     "createdon", "modifiedon",
 ]
+PROGRESS_SELECT = ["mcs_serviceorderprocessingprogressid", "_mcs_serviceorder_value", "mcs_name", "mcs_processingprogress",
+                   "mcs_processingtime", "createdon", "_ownerid_value", "statecode"]
 # mcs_repairmaterialorder.mcs_type：10 向事业部领料 · 20 向子公司借料 · 30 归还单 · 40 向子公司领料 · 50 向寄售库领料
 MAT_BORROW, MAT_RETURN = 20, 30
 # 这些工单状态下不允许改配件消耗：已取消、提交审批、服务完工、远程完工、异常完工
@@ -424,6 +430,12 @@ def normalize_part(r: dict) -> dict:
         "material_code": _fv(r, "_mcs_repairmaterialorderid_value"),
         "created": to_local(r.get("createdon")), "modified": to_local(r.get("modifiedon")),
     }
+
+
+def normalize_progress(r: dict) -> dict:
+    return {"id": r["mcs_serviceorderprocessingprogressid"], "order_d365_id": r.get("_mcs_serviceorder_value") or "",
+            "code": r.get("mcs_name") or "", "text": r.get("mcs_processingprogress") or "",
+            "time": to_local(r.get("mcs_processingtime") or r.get("createdon")), "owner": str(_fv(r, "_ownerid_value") or "")}
 
 
 def normalize_material(r: dict) -> dict:

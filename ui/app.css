@@ -228,3 +228,7 @@ td.st-blank { color: var(--muted); }
 .bs-已取消 { background: #eee; color: var(--muted); }
 .form.two { display: grid; grid-template-columns: 1fr 1fr; gap: 10px 14px; }
 .form.two .wide { grid-column: 1 / -1; }
+.card.progress { background: #f7f9fc; }
+.prog { padding: 6px 0; border-top: 1px solid var(--line); }
+.prog:first-child { border-top: none; padding-top: 0; }
+.prog-text { white-space: pre-wrap; word-break: break-word; line-height: 1.5; margin-top: 2px; }

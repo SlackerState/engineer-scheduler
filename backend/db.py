@@ -169,6 +169,16 @@ CREATE TABLE IF NOT EXISTS material_orders (
     modified TEXT DEFAULT ''
 );
 CREATE INDEX IF NOT EXISTS ix_mat_order ON material_orders(order_d365_id);
+-- D365 服务订单处理进度（mcs_serviceorderprocessingprogress，工程师在 D365 / App 里填的进展），只读同步
+CREATE TABLE IF NOT EXISTS order_progress (
+    id TEXT PRIMARY KEY,
+    order_d365_id TEXT NOT NULL,
+    code TEXT DEFAULT '',      -- SPP-xxxxxxxx
+    text TEXT DEFAULT '',
+    time TEXT DEFAULT '',      -- 处理时间（本地时区）
+    owner TEXT DEFAULT ''
+);
+CREATE INDEX IF NOT EXISTS ix_progress_order ON order_progress(order_d365_id);
 CREATE TABLE IF NOT EXISTS settings (
     key TEXT PRIMARY KEY,
     value TEXT NOT NULL

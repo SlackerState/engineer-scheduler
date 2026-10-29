@@ -300,7 +300,9 @@ async function openOrder(id) {
     <h2>${o.id ? '订单 ' + esc(o.service_order_no || o.udesk_no || '#' + o.id) : '手工新增订单'}
       ${o.d365_link ? '<button class="link" id="od-open">在 D365 打开 ↗</button>' : ''}
       <button class="x" id="od-close">关闭</button></h2>
-    ${fromD365 ? d365ActionsHtml(o) + visitPlanHtml(o) + '<div class="card act parts"><b>配件</b><div id="od-parts"></div></div>' : ''}
+    ${fromD365 ? d365ActionsHtml(o) + visitPlanHtml(o) +
+      '<div class="card act progress"><div class="row"><b>处理进度</b><span class="muted small">工程师在 D365 / App 里填写，随同步更新</span></div><div id="od-progress"><div class="muted small">读取中…</div></div></div>' +
+      '<div class="card act parts"><b>配件</b><div id="od-parts"></div></div>' : ''}
     <div class="sec">${fromD365 ? '本地记录 <span class="muted small">（只保存在软件里，不写回 D365）</span>' : '订单信息'}</div>
     <form class="form" id="od-form" style="display:grid;gap:10px">
       <div class="two"><label>日期<input name="day" type="date" value="${esc(o.day)}"></label>
@@ -311,7 +313,7 @@ async function openOrder(id) {
         <label>机器序列号<input name="serial" value="${esc(o.serial)}"></label></div>
       <label>工程师<input name="engineer" value="${esc(o.engineer)}" ${fromD365 ? 'disabled title="由 D365 同步，改派请用上方「改派工程师」"' : ''}></label>
       <label>问题<textarea name="problem" rows="3">${esc(o.problem)}</textarea></label>
-      <label>处理进度<textarea name="progress" rows="3">${esc(o.progress)}</textarea></label>
+      <label>本地备注（原 Excel「处理进度」，只存在软件里）<textarea name="progress" rows="3">${esc(o.progress)}</textarea></label>
       <div class="row"><button class="primary" type="submit">保存</button>
         ${o.id ? '<button type="button" class="danger" id="od-del">删除</button>' : ''}</div>
     </form>
@@ -747,6 +749,10 @@ async function loadOrderParts(oid, refresh) {
   }
   if (!box) return;
   if (!r) { box.innerHTML = ''; return; }
+  if ($('#od-progress')) $('#od-progress').innerHTML = (r.progress || []).length ? r.progress.map(x => `<div class="prog">
+      <div class="muted small"><b>${esc(x.time)}</b> · ${esc(x.owner)} · <span class="mono">${esc(x.code)}</span></div>
+      <div class="prog-text">${esc(x.text)}</div></div>`).join('')
+    : '<div class="muted small">D365 里还没有处理进度</div>';
   const charged = r.parts.filter(p => p.is_charge);
   const orderLock = CONSUMPTION_LOCKED.includes((S.curOrder || {}).d365_status_code)
     ? `工单状态为「${(S.curOrder || {}).d365_status}」，不能改消耗` : '';

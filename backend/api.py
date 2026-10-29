@@ -221,7 +221,7 @@ class Api:
     def order_parts(self, oid):
         o = self._db.one("SELECT d365_id FROM orders WHERE id=?", (int(oid),))
         if not o or not o["d365_id"]:
-            return {"parts": [], "materials": [], "borrows": [], "charge_total": 0, "currency": ""}
+            return {"parts": [], "materials": [], "borrows": [], "progress": [], "charge_total": 0, "currency": ""}
         res = parts.order_parts(self._db, o["d365_id"])
         self._mat_link(res["materials"])
         return res
