@@ -198,7 +198,7 @@ class D365:
         return "" if st is not None and 70 <= st < 100 else f"工单状态为「{stf}」，只有已接收到现场完工之前可以申请备件"
 
     def _writeoff_block(self, o: dict) -> str:
-        """同 WriteOffInspection：当前用户在本大区有超期未核销的借料、且催办次数已到上限时，不允许再申请。"""
+        """同 WriteOffInspection：当前用户在本大区有超期未核销的借料、且催办次数已到上限时给出提醒。"""
         me = self.whoami().get("UserId")
         pers = self.browser.fetch_json(self.base, self._api(
             f"mcs_personnels?$select=mcs_domainaccount&$filter={quote(f'statecode eq 0 and _mcs_systemuserid_value eq {me}')}"
@@ -226,7 +226,8 @@ class D365:
             "&$orderby=mcs_unwrittendays desc&$top=1")).get("value", [])
         if det and (det[0].get("mcs_unwrittendays") or 0) > (cfg.get("mcs_unwrittendays") or 0) \
                 and (det[0].get("mcs_remindersnumber") or 0) >= (cfg.get("mcs_remindersnumber") or 0):
-            return "你有超期未核销的借料单。按总部规定，要先完成核销才能再申请备件（D365 同样会拦下）"
+            return (f"提醒：你在本大区有借料超期未核销（最长 {det[0].get('mcs_unwrittendays')} 天），"
+                    "按总部规定要尽快核销；不影响这次申请，若 D365 拒绝会显示原因")
         return ""
 
     def apply_check(self, rid: str) -> dict:
@@ -237,11 +238,16 @@ class D365:
         blockers = [x for x in (self._apply_rule(o),) if x]
         if not pending:
             blockers.append("没有待申请的配件：请先添加配件（已在借料单上的不会重复申请）")
+        # 超期未核销：D365 表单脚本里有这条检查，但实际在 D365 网页上并不会拦（用户确认能申请），所以只提醒
+        warnings = []
         if not blockers:
-            w = self._writeoff_block(o)
+            try:
+                w = self._writeoff_block(o)
+            except Exception:  # noqa: BLE001 - 只是提醒，查不到不影响申请
+                w = ""
             if w:
-                blockers.append(w)
-        return {"order_no": o.get("mcs_ordernumber"), "blockers": blockers, "pending": pending,
+                warnings.append(w)
+        return {"order_no": o.get("mcs_ordernumber"), "blockers": blockers, "warnings": warnings, "pending": pending,
                 "receiver": o.get("mcs_receiver") or "", "phone": o.get("mcs_receiverphone") or "",
                 "address": o.get("mcs_receiveraddress") or ""}
 

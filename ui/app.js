@@ -54,14 +54,17 @@ async function safe(fn) {
   try { return await fn(); } catch (e) { toast(e.message || String(e), true); }
 }
 
-// 弹窗：每次新建一层，确认框可以叠在对话框上面（关掉确认框后对话框还在）
-function modal(html, onMount) {
+// 弹窗：每次新建一层，确认框可以叠在对话框上面（关掉确认框后对话框还在）。
+// sticky：填表的对话框点外面不关（否则在输入框里拖选文字、鼠标松在框外时会误关，填的内容就没了）
+function modal(html, onMount, {sticky = false} = {}) {
   const m = document.createElement('div');
   m.className = 'modal'; m.innerHTML = '<div class="modal-box"></div>';
   const box = $('.modal-box', m);
   box.innerHTML = html; document.body.appendChild(m);
   const close = () => m.remove();
-  m.onclick = e => { if (e.target === m) close(); };
+  let downOnBackdrop = false;
+  m.onmousedown = e => { downOnBackdrop = e.target === m; };
+  m.onclick = e => { if (!sticky && downOnBackdrop && e.target === m) close(); };
   onMount && onMount(box, close);
   return close;
 }
@@ -280,7 +283,7 @@ function createOrderDialog() {
       if (res.order_id) openOrder(res.order_id);
     };
     $('#co-eq', box).focus();
-  });
+  }, {sticky: true});
 }
 
 function updateBatch() {
@@ -682,7 +685,7 @@ function addPartDialog(oid) {
       loadOrderParts(oid);
     };
     $('#ap-kw', box).focus();
-  });
+  }, {sticky: true});
 }
 
 // 申请借料：同 D365 工单上的「申请备件」。先检查（状态、超期未核销等）并核对收货信息，再生成借料单
@@ -694,6 +697,7 @@ function applyDialog(oid) {
     if (!c) { close(); return; }
     $('#aa-body', box).innerHTML = `
       ${c.blockers.length ? `<div class="check bad">${c.blockers.map(esc).join('<br>')}</div>` : ''}
+      ${(c.warnings || []).length ? `<div class="check warn-box">${c.warnings.map(esc).join('<br>')}</div>` : ''}
       <div class="sec small">这次申请的配件（${c.pending.length} 个，还没在借料单上的）</div>
       ${c.pending.length ? `<table class="grid compact"><thead><tr><th>物料号</th><th>名称</th><th>数量</th></tr></thead><tbody>` +
         c.pending.map(p => `<tr><td class="mono">${esc(p.part_no)}</td><td>${esc(p.name)}</td><td>${qty(p.quantity)}</td></tr>`).join('') + '</tbody></table>'
@@ -718,7 +722,7 @@ function applyDialog(oid) {
       toast(`已在 D365 生成借料单 ${res.material.code || ''}，请核对借料单信息后提交审批`);
       materialDialog(oid, res.material.id);
     };
-  });
+  }, {sticky: true});
 }
 
 // 配件核销：列表来自 D365（Service_GetServicePartListApi），勾选后免费核销 / 报单核销
@@ -750,7 +754,7 @@ function writeoffDialog(oid) {
     };
     $('#wo-free', box).onclick = () => go(1, '免费核销');
     $('#wo-report', box).onclick = () => go(2, '报单核销');
-  });
+  }, {sticky: true});
 }
 
 // 借料单的 ERP 信息：审批后同步 ERP 得到 ERP 文档编号
@@ -799,7 +803,7 @@ function materialDialog(oid, mid) {
       close(); await loadOrderParts(oid);
       submitMaterial(oid, mid);
     };
-  });
+  }, {sticky: true});
 }
 
 // 借料单提交审批：同 D365 借料单上的「提交审批」，先给出 D365 的配件替换提醒

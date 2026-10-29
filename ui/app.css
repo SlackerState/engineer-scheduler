@@ -232,3 +232,4 @@ td.st-blank { color: var(--muted); }
 .prog { padding: 6px 0; border-top: 1px solid var(--line); }
 .prog:first-child { border-top: none; padding-top: 0; }
 .prog-text { white-space: pre-wrap; word-break: break-word; line-height: 1.5; margin-top: 2px; }
+.check.warn-box { background: #fff4e0; color: var(--warn); }
