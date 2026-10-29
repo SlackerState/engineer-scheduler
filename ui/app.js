@@ -693,10 +693,24 @@ function applyDialog(oid) {
   modal(`<h2>申请借料</h2><div id="aa-body"><div class="empty">正在检查…</div></div>
     <div class="actions"><button data-close>取消</button><button class="primary" id="aa-ok" disabled>申请借料</button></div>`, async (box, close) => {
     $('[data-close]', box).onclick = close;
-    const c = await safe(() => api('apply_check', oid));
-    if (!c) { close(); return; }
+    const c0 = await safe(() => api('apply_check', oid));
+    if (!c0) { close(); return; }
+    const opts = (list, cur) => '<option value="">不填</option>' + list.map(o => `<option value="${o.value}" ${o.value === cur ? 'selected' : ''}>${esc(o.label)}</option>`).join('');
+    const render = c => {
+    // 已经填的收货信息在重新检查后保留
+    const keep = id => $(id, box) ? $(id, box).value : null;
+    const rc = keep('#aa-rc') ?? c.receiver, ph = keep('#aa-ph') ?? c.phone, ad = keep('#aa-ad') ?? c.address;
+    const f = c.fault;
     $('#aa-body', box).innerHTML = `
       ${c.blockers.length ? `<div class="check bad">${c.blockers.map(esc).join('<br>')}</div>` : ''}
+      ${f ? `<div class="card act" style="padding:10px 12px">
+        <div class="row"><b>改为「存在故障」</b><span class="muted small">D365 要求工单「是否存在故障」为是才能申请备件；改了会写回 D365 工单</span></div>
+        <div class="form two">
+          <label>故障级别（选填）<select id="aa-fl">${opts(f.levels, f.level)}</select></label>
+          <label>故障优先级（选填）<select id="aa-fp">${opts(f.priorities, f.priority)}</select></label>
+          <label>故障确认时间（选填）<input id="aa-ft" type="datetime-local" value="${esc((f.confirm_time || '').replace(' ', 'T'))}"></label>
+          <label>&nbsp;<button class="primary" id="aa-fault">改为存在故障</button></label>
+        </div></div>` : ''}
       ${(c.warnings || []).length ? `<div class="check warn-box">${c.warnings.map(esc).join('<br>')}</div>` : ''}
       <div class="sec small">这次申请的配件（${c.pending.length} 个，还没在借料单上的）</div>
       ${c.pending.length ? `<table class="grid compact"><thead><tr><th>物料号</th><th>名称</th><th>数量</th></tr></thead><tbody>` +
@@ -704,12 +718,22 @@ function applyDialog(oid) {
         : '<div class="muted small">没有</div>'}
       <div class="sec small">收货信息（写在 D365 工单上，申请必填）</div>
       <div class="form">
-        <label>收货人<input id="aa-rc" value="${esc(c.receiver)}"></label>
-        <label>收货电话<input id="aa-ph" value="${esc(c.phone)}"></label>
-        <label>收货地址<textarea id="aa-ad" rows="3">${esc(c.address)}</textarea></label>
+        <label>收货人<input id="aa-rc" value="${esc(rc)}"></label>
+        <label>收货电话<input id="aa-ph" value="${esc(ph)}"></label>
+        <label>收货地址<textarea id="aa-ad" rows="3">${esc(ad)}</textarea></label>
       </div>
       <p class="muted small" style="margin:0">确认后调用 D365「申请备件」，生成「向子公司借料」单（已创建状态），之后在配件区点「提交审批」。</p>`;
     $('#aa-ok', box).disabled = !!c.blockers.length;
+    if ($('#aa-fault', box)) $('#aa-fault', box).onclick = async () => {
+      if (!await ask('把这张工单的「是否存在故障」改为「是」，写回 D365？', '改为存在故障')) return;
+      $('#aa-fault', box).disabled = true;
+      const nc = await safe(() => api('set_existfault', oid, {level: $('#aa-fl', box).value, priority: $('#aa-fp', box).value, confirm_time: $('#aa-ft', box).value}));
+      if (!nc) { $('#aa-fault', box).disabled = false; return; }
+      toast('已写回 D365：工单改为存在故障');
+      render(nc);
+    };
+    };
+    render(c0);
     $('#aa-ok', box).onclick = async () => {
       const receiver = {receiver: $('#aa-rc', box).value, phone: $('#aa-ph', box).value, address: $('#aa-ad', box).value};
       const miss = [['收货人', 'receiver'], ['收货电话', 'phone'], ['收货地址', 'address']].filter(([, k]) => !receiver[k].trim()).map(x => x[0]);

@@ -139,7 +139,8 @@ class D365:
     def _order_live(self, rid: str) -> dict:
         sel = ("mcs_ordernumber,mcs_orderstatus,mcs_ordertype,mcs_existfault,mcs_serviceordermode,mcs_offlineoperation,"
                "_mcs_dealerid_value,mcs_fullmaintenance,_mcs_fullmaintenancecontractid_value,_mcs_country_value,"
-               "_mcs_region_value,mcs_receiver,mcs_receiverphone,mcs_receiveraddress")
+               "_mcs_region_value,mcs_receiver,mcs_receiverphone,mcs_receiveraddress,mcs_faultlevel,mcs_faultpriority,"
+               "mcs_faultconfirmationtime")
         return self.browser.fetch_json(self.base, self._api(f"{ENTITY_SET}({rid})?$select={sel}"))
 
     def add_part(self, rid: str, part: dict, qty: float) -> dict:
@@ -170,6 +171,23 @@ class D365:
             raise RuntimeError(f"{name} 已有消耗、核销或归还记录，不能删除")
         self.browser.fetch_json(self.base, self._api(f"mcs_serviceparts({part_id})"), method="DELETE")
         return name
+
+    def set_existfault(self, rid: str, level=None, priority=None, confirm_time: str = "") -> None:
+        """把工单「是否存在故障」改为是（申请备件的前提），可顺带填故障级别、故障优先级、故障确认时间。"""
+        o = self._order_live(rid)
+        if o.get("mcs_orderstatus") in FINAL_CODES:
+            raise RuntimeError(f"工单 {o.get('mcs_ordernumber')} 当前状态为「{o.get('mcs_orderstatus' + FV)}」，不能再改")
+        body: dict = {"mcs_existfault": True}
+        for key, val in (("mcs_faultlevel", level), ("mcs_faultpriority", priority)):
+            if val not in (None, ""):
+                if int(val) not in [x["value"] for x in self._options(key, ENTITY_SET[:-1])]:
+                    raise RuntimeError("故障级别 / 优先级不在 D365 的可选范围内")
+                body[key] = int(val)
+        if confirm_time:
+            t = datetime.strptime(confirm_time.replace("T", " ")[:16], "%Y-%m-%d %H:%M")
+            body["mcs_faultconfirmationtime"] = t.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        self.browser.fetch_json(self.base, self._api(f"{ENTITY_SET}({rid})"), method="PATCH", body=body,
+                                headers={"If-Match": "*"})
 
     def set_receiver(self, rid: str, receiver: str, phone: str, address: str):
         """申请备件前要填的收货人 / 电话 / 地址（写在工单上）。"""
@@ -247,7 +265,16 @@ class D365:
                 w = ""
             if w:
                 warnings.append(w)
+        fault = None
+        if o.get("mcs_ordertype") and o.get("mcs_ordertype") != 80 and not o.get("mcs_existfault") \
+                and o.get("mcs_orderstatus") not in FINAL_CODES:
+            # 「是否存在故障」为否会被拦：给出改为存在故障需要的信息（故障级别 / 优先级 / 确认时间，英国工单常填，选填）
+            fault = {"level": o.get("mcs_faultlevel"), "priority": o.get("mcs_faultpriority"),
+                     "confirm_time": to_local(o.get("mcs_faultconfirmationtime")),
+                     "levels": self._options("mcs_faultlevel", ENTITY_SET[:-1]),
+                     "priorities": self._options("mcs_faultpriority", ENTITY_SET[:-1])}
         return {"order_no": o.get("mcs_ordernumber"), "blockers": blockers, "warnings": warnings, "pending": pending,
+                "fault": fault,
                 "receiver": o.get("mcs_receiver") or "", "phone": o.get("mcs_receiverphone") or "",
                 "address": o.get("mcs_receiveraddress") or ""}
 
@@ -314,17 +341,18 @@ class D365:
                        "mcs_acceptpartialshipment,mcs_outboundmethod,mcs_supplymethod,_mcs_costcenter_value,"
                        "mcs_sapnumber,mcs_synchronizationstatus,mcs_erpmessage,mcs_approvaltime")
 
-    def _options(self, attr: str) -> list[dict]:
+    def _options(self, attr: str, entity: str = "mcs_repairmaterialorder") -> list[dict]:
         cache = self.__dict__.setdefault("_opt_cache", {})
-        if attr not in cache:
+        key = f"{entity}.{attr}"
+        if key not in cache:
             r = self.browser.fetch_json(self.base, self._api(
-                f"EntityDefinitions(LogicalName='mcs_repairmaterialorder')/Attributes(LogicalName='{attr}')/"
+                f"EntityDefinitions(LogicalName='{entity}')/Attributes(LogicalName='{attr}')/"
                 "Microsoft.Dynamics.CRM.PicklistAttributeMetadata?$select=LogicalName"
                 "&$expand=OptionSet($select=Options),GlobalOptionSet($select=Options)"))
             opts = (r.get("OptionSet") or r.get("GlobalOptionSet") or {}).get("Options") or []
-            cache[attr] = [{"value": o["Value"], "label": ((o.get("Label") or {}).get("UserLocalizedLabel") or {}).get("Label", "")}
-                           for o in opts]
-        return cache[attr]
+            cache[key] = [{"value": o["Value"], "label": ((o.get("Label") or {}).get("UserLocalizedLabel") or {}).get("Label", "")}
+                          for o in opts]
+        return cache[key]
 
     def material_form(self, mid: str) -> dict:
         m = self.browser.fetch_json(self.base, self._api(f"mcs_repairmaterialorders({mid})?$select={self.MAT_EDIT_SELECT}"))

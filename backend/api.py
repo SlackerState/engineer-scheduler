@@ -264,6 +264,14 @@ class Api:
         o = self._d365_order(oid)
         return self._d365_call(self._d365.apply_check, o["d365_id"])
 
+    def set_existfault(self, oid, data=None):
+        """申请借料时把工单改为「存在故障」，写回 D365 后重新检查。"""
+        o = self._d365_order(oid)
+        d = data or {}
+        self._d365_call(self._d365.set_existfault, o["d365_id"], d.get("level"), d.get("priority"), d.get("confirm_time") or "")
+        self._refresh_from_d365([o["d365_id"]])
+        return self._d365_call(self._d365.apply_check, o["d365_id"])
+
     def apply_parts(self, oid, receiver=None):
         """申请借料：收货信息有改动时先写回工单，再调 D365「申请备件」，返回新借料单。"""
         o = self._d365_order(oid)
