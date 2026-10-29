@@ -285,6 +285,16 @@ class Api:
         self._d365_order(oid)
         return self._d365_call(self._d365.material_check, mid)
 
+    def material_form(self, oid, mid):
+        self._d365_order(oid)
+        return self._d365_call(self._d365.material_form, mid)
+
+    def save_material(self, oid, mid, data):
+        o = self._d365_order(oid)
+        r = self._d365_call(self._d365.save_material, mid, data or {})
+        self._sync.sync_parts([o["d365_id"]])
+        return {**self.order_parts(oid), "saved": r}
+
     def submit_material(self, oid, mid):
         o = self._d365_order(oid)
         code = self._d365_call(self._d365.submit_material, mid)

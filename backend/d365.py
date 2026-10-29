@@ -301,6 +301,83 @@ class D365:
                     warnings = [str(res["Description"])]
         return {"code": code, "blockers": blockers, "warnings": warnings, "parts": n}
 
+    # 借料单信息（同借料单表单「常规」：已创建 / 已拒绝时可改）。英国借料单发货工厂、卖方、出库方式、供应方式都是固定的，
+    # 实际要选的是仓库；同一工单上已有其它借料单时表单会锁住卖方/工厂/仓库（mcs_repairmaterialorder.js）
+    MAT_EDIT_SELECT = ("mcs_code,mcs_type,mcs_orderstatus,_mcs_seller_value,_mcs_factory_value,_mcs_warehouse_value,"
+                       "_mcs_customer_value,_mcs_serviceorderid_value,mcs_orderreason,mcs_reasonforapplication,"
+                       "mcs_acceptpartialshipment,mcs_outboundmethod,mcs_supplymethod,_mcs_costcenter_value,"
+                       "mcs_sapnumber,mcs_synchronizationstatus,mcs_erpmessage,mcs_approvaltime")
+
+    def _options(self, attr: str) -> list[dict]:
+        cache = self.__dict__.setdefault("_opt_cache", {})
+        if attr not in cache:
+            r = self.browser.fetch_json(self.base, self._api(
+                f"EntityDefinitions(LogicalName='mcs_repairmaterialorder')/Attributes(LogicalName='{attr}')/"
+                "Microsoft.Dynamics.CRM.PicklistAttributeMetadata?$select=LogicalName"
+                "&$expand=OptionSet($select=Options),GlobalOptionSet($select=Options)"))
+            opts = (r.get("OptionSet") or r.get("GlobalOptionSet") or {}).get("Options") or []
+            cache[attr] = [{"value": o["Value"], "label": ((o.get("Label") or {}).get("UserLocalizedLabel") or {}).get("Label", "")}
+                           for o in opts]
+        return cache[attr]
+
+    def material_form(self, mid: str) -> dict:
+        m = self.browser.fetch_json(self.base, self._api(f"mcs_repairmaterialorders({mid})?$select={self.MAT_EDIT_SELECT}"))
+        st = m.get("mcs_orderstatus")
+        editable = st in (10, 40) and m.get("mcs_type") != MAT_RETURN
+        so = m.get("_mcs_serviceorderid_value")
+        lock = ""
+        if so:
+            flt = f"statecode eq 0 and mcs_orderstatus ne 60 and mcs_repairmaterialorderid ne {mid} and _mcs_serviceorderid_value eq {so}"
+            others = self.browser.fetch_json(self.base, self._api(
+                f"mcs_repairmaterialorders?$select=mcs_code&$filter={quote(flt)}")).get("value", [])
+            if others:
+                lock = "这张工单已有其它借料单（" + "、".join(o.get("mcs_code") or "" for o in others[:3]) + "），D365 锁定卖方/工厂/仓库与它们一致"
+        whs = []
+        if m.get("_mcs_factory_value"):
+            wf = (f"statecode eq 0 and _mcs_factoryid_value eq {m['_mcs_factory_value']} and Microsoft.Dynamics.CRM."
+                  "ContainValues(PropertyName='mcs_warehouselocationidentifier',PropertyValues=['2'])")
+            whs = [{"id": w["mcs_warehouseid"], "label": f"{w.get('mcs_code') or ''} {w.get('mcs_name') or ''}".strip()}
+                   for w in self.browser.fetch_json(self.base, self._api(
+                       f"mcs_warehouses?$select=mcs_warehouseid,mcs_name,mcs_code&$orderby=mcs_code&$filter={quote(wf)}")).get("value", [])]
+        f = lambda k: m.get(k + FV) or ""  # noqa: E731
+        return {
+            "id": mid, "code": m.get("mcs_code"), "status": f("mcs_orderstatus"), "status_code": st, "editable": editable,
+            "warehouse_lock": lock, "seller": f("_mcs_seller_value"), "factory": f("_mcs_factory_value"),
+            "customer": f("_mcs_customer_value"), "outbound": f("mcs_outboundmethod"), "supply": f("mcs_supplymethod"),
+            "costcenter": f("_mcs_costcenter_value"),
+            "warehouse_id": m.get("_mcs_warehouse_value") or "", "warehouse": f("_mcs_warehouse_value"), "warehouses": whs,
+            "orderreason": m.get("mcs_orderreason"), "orderreasons": self._options("mcs_orderreason"),
+            "partial": m.get("mcs_acceptpartialshipment"), "partials": self._options("mcs_acceptpartialshipment"),
+            "reason": m.get("mcs_reasonforapplication") or "",
+            "sap_number": m.get("mcs_sapnumber") or "", "erp_status": f("mcs_synchronizationstatus"),
+            "erp_message": m.get("mcs_erpmessage") or "", "approval_time": to_local(m.get("mcs_approvaltime")),
+        }
+
+    def save_material(self, mid: str, data: dict) -> dict:
+        cur = self.material_form(mid)
+        if not cur["editable"]:
+            raise RuntimeError(f"借料单 {cur['code']} 当前状态为「{cur['status']}」，只有已创建或已拒绝时可以修改")
+        body: dict = {}
+        if "reason" in data and (data["reason"] or "") != cur["reason"]:
+            body["mcs_reasonforapplication"] = data["reason"] or None
+        for key, attr, opts in (("orderreason", "mcs_orderreason", cur["orderreasons"]),
+                                ("partial", "mcs_acceptpartialshipment", cur["partials"])):
+            if data.get(key) not in (None, "") and int(data[key]) != cur[key]:
+                if int(data[key]) not in [o["value"] for o in opts]:
+                    raise RuntimeError("选项不在 D365 的可选范围内")
+                body[attr] = int(data[key])
+        wh = data.get("warehouse_id")
+        if wh and wh != cur["warehouse_id"]:
+            if cur["warehouse_lock"]:
+                raise RuntimeError(cur["warehouse_lock"])
+            if wh not in [w["id"] for w in cur["warehouses"]]:
+                raise RuntimeError("这个仓库不属于借料单的发货工厂")
+            body["mcs_warehouse@odata.bind"] = f"/mcs_warehouses({wh})"
+        if body:
+            self.browser.fetch_json(self.base, self._api(f"mcs_repairmaterialorders({mid})"), method="PATCH",
+                                    body=body, headers={"If-Match": "*"})
+        return {"changed": len(body), "code": cur["code"]}
+
     def submit_material(self, mid: str) -> str:
         chk = self.material_check(mid)
         if chk["blockers"]:
@@ -401,7 +478,8 @@ PART_SELECT = [
 MATERIAL_SELECT = [
     "mcs_repairmaterialorderid", "_mcs_serviceorderid_value", "mcs_code", "mcs_type", "mcs_orderstatus",
     "mcs_returnmaterialstatus", "mcs_shipmentstatus", "_mcs_borroworder_value", "mcs_orderreason",
-    "createdon", "modifiedon",
+    "createdon", "modifiedon", "mcs_sapnumber", "mcs_synchronizationstatus", "mcs_erpmessage",
+    "mcs_materialdocnumber", "mcs_approvaltime", "_mcs_warehouse_value",
 ]
 PROGRESS_SELECT = ["mcs_serviceorderprocessingprogressid", "_mcs_serviceorder_value", "mcs_name", "mcs_processingprogress",
                    "mcs_processingtime", "createdon", "_ownerid_value", "statecode"]
@@ -447,6 +525,10 @@ def normalize_material(r: dict) -> dict:
         "shipment": _fv(r, "mcs_shipmentstatus"), "borrow_id": r.get("_mcs_borroworder_value") or "",
         "borrow_code": _fv(r, "_mcs_borroworder_value"), "reason": _fv(r, "mcs_orderreason"),
         "created": to_local(r.get("createdon")), "modified": to_local(r.get("modifiedon")),
+        # 审批后同步到 ERP：ERP 文档编号、同步状态（待同步 / 同步成功 / 同步失败 / 同步中）、ERP 消息
+        "sap_number": r.get("mcs_sapnumber") or "", "erp_status": _fv(r, "mcs_synchronizationstatus"),
+        "erp_message": (r.get("mcs_erpmessage") or "")[:500], "material_doc": r.get("mcs_materialdocnumber") or "",
+        "approval_time": to_local(r.get("mcs_approvaltime")), "warehouse": _fv(r, "_mcs_warehouse_value"),
     }
 
 

@@ -166,7 +166,13 @@ CREATE TABLE IF NOT EXISTS material_orders (
     borrow_code TEXT DEFAULT '',
     reason TEXT DEFAULT '',
     created TEXT DEFAULT '',
-    modified TEXT DEFAULT ''
+    modified TEXT DEFAULT '',
+    sap_number TEXT DEFAULT '',     -- ERP 文档编号（审批后同步 ERP 得到）
+    erp_status TEXT DEFAULT '',
+    erp_message TEXT DEFAULT '',
+    material_doc TEXT DEFAULT '',
+    approval_time TEXT DEFAULT '',
+    warehouse TEXT DEFAULT ''
 );
 CREATE INDEX IF NOT EXISTS ix_mat_order ON material_orders(order_d365_id);
 -- D365 服务订单处理进度（mcs_serviceorderprocessingprogress，工程师在 D365 / App 里填的进展），只读同步
@@ -214,6 +220,10 @@ class DB:
                               ("return_order", "TEXT DEFAULT ''")):
                 if name not in cols:
                     self.conn.execute(f"ALTER TABLE parts ADD COLUMN {name} {ddl}")
+            cols = {r[1] for r in self.conn.execute("PRAGMA table_info(material_orders)")}
+            for name in ("sap_number", "erp_status", "erp_message", "material_doc", "approval_time", "warehouse"):
+                if name not in cols:
+                    self.conn.execute(f"ALTER TABLE material_orders ADD COLUMN {name} TEXT DEFAULT ''")
             cols = {r[1] for r in self.conn.execute("PRAGMA table_info(engineers)")}
             if "active" not in cols:
                 self.conn.execute("ALTER TABLE engineers ADD COLUMN active INTEGER NOT NULL DEFAULT 1")

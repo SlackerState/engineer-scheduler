@@ -611,7 +611,7 @@ async function loadBorrows() {
     <th>借料时间</th><th>配件（剩余 / 借出）</th><th>归还单</th><th>工单状态</th></tr></thead><tbody>` + r.rows.map(b => `
     <tr class="click" ${b.order_id ? `data-order="${b.order_id}"` : ''}>
       <td>${stateBadge(b.state)}</td>
-      <td class="mono nowrap"><a class="lnk" data-link="${esc(b.d365_link)}">${esc(b.code)} ↗</a><div class="muted small">${esc(b.status)}</div></td>
+      <td class="mono nowrap"><a class="lnk" data-link="${esc(b.d365_link)}">${esc(b.code)} ↗</a><div class="muted small">${esc(b.status)}</div>${erpHtml(b)}</td>
       <td class="mono nowrap">${esc(b.service_order_no || '')}<div class="muted small">${esc(b.udesk_no || '')}</div></td>
       <td>${esc(b.customer || '')}</td><td class="nowrap">${esc(b.engineer || '')}</td>
       <td class="nowrap">${esc((b.created || '').slice(0, 10))}${b.days != null ? `<div class="muted small">${b.days} 天前</div>` : ''}</td>
@@ -715,7 +715,57 @@ function applyDialog(oid) {
       if (!res) { $('#aa-ok', box).disabled = false; $('#aa-ok', box).textContent = '申请借料'; return; }
       close();
       await loadOrderParts(oid);
-      if (await ask(`已在 D365 生成借料单 ${res.material.code || ''}（已创建）。\n现在提交审批吗？`, '提交审批')) submitMaterial(oid, res.material.id);
+      toast(`已在 D365 生成借料单 ${res.material.code || ''}，请核对借料单信息后提交审批`);
+      materialDialog(oid, res.material.id);
+    };
+  });
+}
+
+// 借料单的 ERP 信息：审批后同步 ERP 得到 ERP 文档编号
+const erpHtml = m => m.sap_number ? `<div class="small">ERP <b class="mono">${esc(m.sap_number)}</b>${m.erp_status && m.erp_status !== '同步成功' ? ` <span class="muted">${esc(m.erp_status)}</span>` : ''}</div>`
+  : m.erp_status && [20, 30, 50].includes(m.status_code) ? `<div class="small muted">ERP ${esc(m.erp_status)}${m.erp_message ? `：${esc(m.erp_message.slice(0, 80))}` : ''}</div>` : '';
+
+// 借料单信息：同 D365 借料单「常规」页。已创建 / 已拒绝时可改仓库、订单原因、接受部分装运、申请原因，然后提交审批
+function materialDialog(oid, mid) {
+  modal(`<h2>借料单信息</h2><div id="md-body"><div class="empty">正在从 D365 读取借料单…</div></div>
+    <div class="actions" id="md-actions"><button data-close>关闭</button></div>`, async (box, close) => {
+    $('[data-close]', box).onclick = close;
+    const m = await safe(() => api('material_form', oid, mid));
+    if (!m) { close(); return; }
+    const sel = (id, opts, cur, dis) => `<select id="${id}" ${dis ? 'disabled' : ''}>${opts.map(o =>
+      `<option value="${esc(o.value ?? o.id)}" ${String(o.value ?? o.id) === String(cur) ? 'selected' : ''}>${esc(o.label)}</option>`).join('')}</select>`;
+    const ro = (l, v) => `<label>${l}<input value="${esc(v || '—')}" disabled></label>`;
+    const ed = m.editable;
+    const whs = m.warehouses.length ? m.warehouses : [{id: m.warehouse_id, label: m.warehouse}];
+    $('#md-body', box).innerHTML = `
+      <div class="row"><b class="mono">${esc(m.code)}</b><span class="badge b-待处理">${esc(m.status)}</span>
+        ${m.sap_number ? `<span>ERP 文档编号 <b class="mono">${esc(m.sap_number)}</b></span>` : ''}
+        ${m.erp_status ? `<span class="muted small">同步 ERP：${esc(m.erp_status)}</span>` : ''}</div>
+      ${m.erp_message && !m.sap_number ? `<div class="check bad">${esc(m.erp_message)}</div>` : ''}
+      ${ed ? '' : '<p class="muted small" style="margin:0">借料单已提交，只能查看；要改请在 D365 里撤回审批。</p>'}
+      <div class="form two">
+        <label>仓库 *${sel('md-wh', whs, m.warehouse_id, !ed || !!m.warehouse_lock)}${m.warehouse_lock ? `<span class="muted small">${esc(m.warehouse_lock)}</span>` : ''}</label>
+        <label>订单原因 *${sel('md-or', m.orderreasons, m.orderreason, !ed)}</label>
+        <label>接受部分装运${sel('md-pa', m.partials, m.partial, !ed)}</label>
+        <label>申请原因<input id="md-rs" value="${esc(m.reason)}" ${ed ? '' : 'disabled'} placeholder="如 Repairs on site"></label>
+        ${ro('卖方', m.seller)}${ro('发货工厂', m.factory)}${ro('客户', m.customer)}${ro('成本中心', m.costcenter)}
+        ${ro('出库方式', m.outbound)}${ro('供应方式', m.supply)}
+        ${m.approval_time ? ro('审批通过时间', m.approval_time) : ''}
+      </div>`;
+    if (!ed) return;
+    $('#md-actions', box).innerHTML = `<button data-close>取消</button><button id="md-save">只保存</button><button class="primary" id="md-submit">保存并提交审批</button>`;
+    $('[data-close]', box).onclick = close;
+    const data = () => ({warehouse_id: $('#md-wh', box).value, orderreason: $('#md-or', box).value, partial: $('#md-pa', box).value, reason: $('#md-rs', box).value.trim()});
+    const save = async () => {
+      const r = await safe(() => api('save_material', oid, mid, data()));
+      if (r) toast(r.saved.changed ? `已保存到 D365：借料单 ${r.saved.code}` : '没有改动');
+      return r;
+    };
+    $('#md-save', box).onclick = async () => { if (await save()) { close(); loadOrderParts(oid); } };
+    $('#md-submit', box).onclick = async () => {
+      if (!await save()) return;
+      close(); await loadOrderParts(oid);
+      submitMaterial(oid, mid);
     };
   });
 }
@@ -783,11 +833,11 @@ async function loadOrderParts(oid, refresh) {
       : '<div class="muted small">这单没有配件（或还没同步）</div>'}
     ${r.borrows.length ? '<div class="sec small">借料归还</div>' + r.borrows.map(b => `<div class="row">${stateBadge(b.state)}
       <a class="lnk mono" data-open="${esc((r.materials.find(m => m.id === b.id) || {}).d365_link || '')}">${esc(b.code)} ↗</a>
-      <span class="muted small">剩余 ${qty(b.remaining)} 件 · ${esc(b.return_status || '')}${b.returns.length ? ' · 归还单 ' + b.returns.map(x => esc(x.code) + '（' + esc(x.status) + '）').join('、') : ''}</span></div>`).join('') : ''}
+      <span class="muted small">剩余 ${qty(b.remaining)} 件 · ${esc(b.return_status || '')}${b.returns.length ? ' · 归还单 ' + b.returns.map(x => esc(x.code) + '（' + esc(x.status) + '）').join('、') : ''}</span>${erpHtml(b)}</div>`).join('') : ''}
     ${toSubmit.length ? '<div class="sec small">待提交的借料单</div>' + toSubmit.map(m => `<div class="row">
       <span class="badge b-待处理">${esc(m.status)}</span><a class="lnk mono" data-open="${esc(m.d365_link || '')}">${esc(m.code || '新借料单')} ↗</a>
       <span class="muted small">${esc(m.type)}</span>
-      <button class="primary" data-submit-mat="${esc(m.id)}" style="margin-left:auto">提交审批</button></div>`).join('') : ''}`;
+      <button class="primary" data-edit-mat="${esc(m.id)}" style="margin-left:auto">填写并提交审批</button></div>`).join('') : ''}`;
   $('#od-parts-refresh').onclick = () => loadOrderParts(oid, true);
   if ($('#od-part-add')) $('#od-part-add').onclick = () => addPartDialog(oid);
   if ($('#od-apply')) $('#od-apply').onclick = () => applyDialog(oid);
@@ -806,6 +856,7 @@ async function loadOrderParts(oid, refresh) {
       return;
     }
     if (e.target.dataset.submitMat) { submitMaterial(oid, e.target.dataset.submitMat); return; }
+    if (e.target.dataset.editMat) { materialDialog(oid, e.target.dataset.editMat); return; }
     if (!e.target.matches('[data-save-cq]')) return;
     const tr = e.target.closest('tr[data-part]'), inp = $('input.cq', tr);
     const v = Number(inp.value), max = Number(inp.max), old = Number(inp.dataset.old);

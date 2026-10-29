@@ -17,7 +17,7 @@ FILL_IF_EMPTY = ["day", "service_order_no", "customer", "serial", "problem"]
 
 
 # 配件同步字段版本：改了 PART_SELECT 就加 1，下次同步会全量重拉配件
-PARTS_SYNC_V = 3
+PARTS_SYNC_V = 4
 
 
 class Syncer:
