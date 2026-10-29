@@ -178,7 +178,9 @@ class Syncer:
         for c in FILL_IF_EMPTY:
             if not cur.get(c) and row[c]:
                 fields[c] = row[c]
-        if row["engineer"]:
+        # 工程师以 D365 为准：D365 改派、撤销派工（变成空）都要跟着变。只有 Excel 导入、
+        # 第一次和 D365 关联的老记录，D365 里没有工程师时保留 Excel 里填的
+        if row["engineer"] or cur.get("d365_id"):
             fields["engineer"] = row["engineer"]
         if s.get("d365_status_overrides_local", True) and row["status"]:
             fields["status"] = row["status"]

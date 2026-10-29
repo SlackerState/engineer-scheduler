@@ -326,6 +326,7 @@ async function openOrder(id) {
   $('#od-close').onclick = () => (d.hidden = true);
   if ($('#od-open')) $('#od-open').onclick = () => api('open_url', o.d365_link);
   S.curOrder = o;
+  $('#od-form').addEventListener('input', () => { $('#od-form').dataset.dirty = '1'; });
   if (fromD365) loadOrderParts(o.id).then(() => loadOrderParts(o.id, 'auto'));
   const reopen = () => { refreshView(); openOrder(o.id); };
   if ($('#od-plan-save')) $('#od-plan-save').onclick = () => safe(async () => {
@@ -859,6 +860,13 @@ async function loadOrderParts(oid, refresh) {
   }
   if (!box) return;
   if (!r) { box.innerHTML = ''; return; }
+  // D365 里这单本身变了（改派、状态、时间等）：重新显示详情；正在改本地记录时不打断，只提示
+  if (r.order_changed && (S.curOrder || {}).id === oid) {
+    refreshView();
+    const form = $('#od-form');
+    if (!form || !form.dataset.dirty) { openOrder(oid); return; }
+    toast('D365 里这单有更新（如工程师、状态），保存本地记录后重新打开详情即可看到');
+  }
   if ($('#od-progress')) $('#od-progress').innerHTML = (r.progress || []).length ? r.progress.map(x => `<div class="prog">
       <div class="muted small"><b>${esc(x.time)}</b> · ${esc(x.owner)} · <span class="mono">${esc(x.code)}</span></div>
       <div class="prog-text">${esc(x.text)}</div></div>`).join('')

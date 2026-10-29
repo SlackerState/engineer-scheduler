@@ -11,12 +11,14 @@ from . import excel_io, logic, parts, workload
 from .browser import Browser, NeedLogin
 from .d365 import D365, normalize
 from .db import DB, ORDER_EDITABLE, ORDER_STATUSES, SLOTS, STATUSES, app_dir
-from .sync import Syncer
+from .sync import D365_COLUMNS, Syncer
 from .udesk import SOURCE_CHANNELS, Udesk
 from .updater import Updater
 from .version import __version__
 
 RISK_OPEN = ("overdue", "soon", "plan_late")
+# 打开详情时从 D365 刷新，这些字段变了就重新显示详情
+ORDER_LIVE_KEYS = ("engineer", "status", *D365_COLUMNS)
 
 
 class Api:
@@ -320,9 +322,12 @@ class Api:
         return {**self.order_parts(oid), "submitted": code}
 
     def refresh_order_parts(self, oid, quiet=False):
-        """从 D365 重新读取这一单的配件和借料/归还单。quiet：打开详情时的自动刷新，失败就用本地数据。"""
+        """从 D365 重新读取这一单（工程师、状态、时间等）和它的配件、借料/归还单。
+        quiet：打开详情时的自动刷新，失败就用本地数据。工单本身有变化时返回 order_changed，界面据此重新显示。"""
         o = self._d365_order(oid)
+        before = self._db.one("SELECT * FROM orders WHERE id=?", (o["id"],))
         try:
+            self._refresh_from_d365([o["d365_id"]])
             self._sync.sync_parts([o["d365_id"]])
         except Exception as e:  # noqa: BLE001
             if not quiet:
@@ -333,7 +338,10 @@ class Api:
             res["stale"] = ("没登录 D365" if isinstance(e, NeedLogin) else "没连上 D365") + "，显示的是上次同步的数据"
             res["stale_detail"] = str(e).splitlines()[0][:200] if str(e) else ""
             return res
-        return self.order_parts(oid)
+        res = self.order_parts(oid)
+        after = self._db.one("SELECT * FROM orders WHERE id=?", (o["id"],))
+        res["order_changed"] = any(before.get(k) != after.get(k) for k in ORDER_LIVE_KEYS)
+        return res
 
     def orders_since(self, day, status=""):
         """创建日期在 day 及之后的工单，按创建时间倒序。"""
