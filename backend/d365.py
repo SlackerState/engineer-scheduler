@@ -390,6 +390,44 @@ class D365:
         return [normalize_progress(r) for r in
                 self._by_orders("mcs_serviceorderprocessingprogresses", PROGRESS_SELECT, "_mcs_serviceorder_value", order_ids)]
 
+    def writeoffs_for(self, order_ids: list[str]) -> list[dict]:
+        return [normalize_writeoff(r) for r in
+                self._by_orders("mcs_partswriteoffdocs", WRITEOFF_SELECT, "_mcs_serviceorderid_value", order_ids)]
+
+    # ---------- 配件核销（同 D365 工单上的「配件核销」：partswriteoff.html） ----------
+    # 按钮只在「服务完工」显示，服务代理商模式不显示（PartsWriteOffEnableRule，非印度）；可核销的配件由
+    # Service_GetServicePartListApi 给出，核销调 Service_PartsWriteOffApi，Type 1 = 免费核销，2 = 报单核销
+    def _writeoff_rule(self, o: dict) -> str:
+        if o.get("mcs_serviceordermode") == 20:
+            return "服务代理商模式的工单不能在这里核销"
+        if o.get("mcs_orderstatus") != 110:
+            return f"工单状态为「{o.get('mcs_orderstatus' + FV) or o.get('mcs_orderstatus')}」，D365 只允许「服务完工」后核销配件"
+        return ""
+
+    def writeoff_list(self, rid: str) -> dict:
+        o = self._order_live(rid)
+        res = self._action("Service_GetServicePartListApi", {"OrderId": rid})
+        items = [{"id": x.get("Id"), "line": x.get("Code") or "", "part_no": x.get("PartCode") or "",
+                  "name": x.get("PartName") or "", "qty": x.get("ConsumptionQty") or ""}
+                 for x in (res.get("ServicePartInfoData") or [])]
+        return {"order_no": o.get("mcs_ordernumber"), "blocker": self._writeoff_rule(o), "items": items}
+
+    def writeoff(self, rid: str, part_ids: list[str], kind: int) -> int:
+        if kind not in (1, 2):
+            raise RuntimeError("核销类型不对")
+        if not part_ids:
+            raise RuntimeError("请选择要核销的配件")
+        chk = self.writeoff_list(rid)
+        if chk["blocker"]:
+            raise RuntimeError(chk["blocker"])
+        ok = {x["id"] for x in chk["items"]}
+        bad = [x for x in part_ids if x not in ok]
+        if bad:
+            raise RuntimeError("有配件已经不在 D365 的可核销列表里了，请刷新后重选")
+        self._action("Service_PartsWriteOffApi", {"PartsWriteOffParame": json.dumps(
+            {"OrderId": rid, "ServicePartList": part_ids, "Type": str(kind)})})
+        return len(part_ids)
+
     def materials_for(self, order_ids: list[str]) -> list[dict]:
         return [normalize_material(r) for r in
                 self._by_orders("mcs_repairmaterialorders", MATERIAL_SELECT, "_mcs_serviceorderid_value", order_ids)]
@@ -481,6 +519,8 @@ MATERIAL_SELECT = [
     "createdon", "modifiedon", "mcs_sapnumber", "mcs_synchronizationstatus", "mcs_erpmessage",
     "mcs_materialdocnumber", "mcs_approvaltime", "_mcs_warehouse_value",
 ]
+WRITEOFF_SELECT = ["mcs_partswriteoffdocid", "_mcs_serviceorderid_value", "mcs_code", "mcs_type", "mcs_erpordercode",
+                   "mcs_synchronizationstatus", "mcs_erpmessage", "_mcs_repairmaterialorderid_value", "createdon"]
 PROGRESS_SELECT = ["mcs_serviceorderprocessingprogressid", "_mcs_serviceorder_value", "mcs_name", "mcs_processingprogress",
                    "mcs_processingtime", "createdon", "_ownerid_value", "statecode"]
 # mcs_repairmaterialorder.mcs_type：10 向事业部领料 · 20 向子公司借料 · 30 归还单 · 40 向子公司领料 · 50 向寄售库领料
@@ -508,6 +548,13 @@ def normalize_part(r: dict) -> dict:
         "material_code": _fv(r, "_mcs_repairmaterialorderid_value"),
         "created": to_local(r.get("createdon")), "modified": to_local(r.get("modifiedon")),
     }
+
+
+def normalize_writeoff(r: dict) -> dict:
+    return {"id": r["mcs_partswriteoffdocid"], "order_d365_id": r.get("_mcs_serviceorderid_value") or "",
+            "code": r.get("mcs_code") or "", "type": str(_fv(r, "mcs_type") or ""), "erp_code": r.get("mcs_erpordercode") or "",
+            "erp_status": str(_fv(r, "mcs_synchronizationstatus") or ""), "erp_message": (r.get("mcs_erpmessage") or "")[:500],
+            "material_code": str(_fv(r, "_mcs_repairmaterialorderid_value") or ""), "created": to_local(r.get("createdon"))}
 
 
 def normalize_progress(r: dict) -> dict:

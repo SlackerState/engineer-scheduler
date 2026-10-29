@@ -17,7 +17,7 @@ FILL_IF_EMPTY = ["day", "service_order_no", "customer", "serial", "problem"]
 
 
 # 配件同步字段版本：改了 PART_SELECT 就加 1，下次同步会全量重拉配件
-PARTS_SYNC_V = 4
+PARTS_SYNC_V = 5
 
 
 class Syncer:
@@ -138,18 +138,21 @@ class Syncer:
         return msg
 
     def sync_parts(self, order_ids: list[str]) -> tuple[int, int]:
-        """拉取这些工单的服务配件、领料/借料/归还单和处理进度，整单替换本地记录（D365 里删掉的也会消失）。"""
+        """拉取这些工单的服务配件、领料/借料/归还单、核销单和处理进度，整单替换本地记录（D365 里删掉的也会消失）。"""
         if not order_ids:
             return 0, 0
         parts = self.d365.parts_for(order_ids)
         mats = self.d365.materials_for(order_ids)
         progress = self.d365.progress_for(order_ids)
+        wos = self.d365.writeoffs_for(order_ids)
         with self.db.lock:
             marks = ",".join("?" * len(order_ids))
             self.db.conn.execute(f"DELETE FROM parts WHERE order_d365_id IN ({marks})", order_ids)
             self.db.conn.execute(f"DELETE FROM material_orders WHERE order_d365_id IN ({marks})", order_ids)
             self.db.conn.execute(f"DELETE FROM order_progress WHERE order_d365_id IN ({marks})", order_ids)
-            for table, rows in (("parts", parts), ("material_orders", mats), ("order_progress", progress)):
+            self.db.conn.execute(f"DELETE FROM writeoff_docs WHERE order_d365_id IN ({marks})", order_ids)
+            for table, rows in (("parts", parts), ("material_orders", mats), ("order_progress", progress),
+                                ("writeoff_docs", wos)):
                 for r in rows:
                     cols = list(r)
                     self.db.conn.execute(f"INSERT OR REPLACE INTO {table}({','.join(cols)}) "

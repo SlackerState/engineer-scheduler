@@ -76,6 +76,7 @@ def order_parts(db: DB, order_d365_id: str) -> dict:
     charged = [p for p in parts if p["is_charge"]]
     return {
         "parts": parts, "materials": mats, "borrows": borrows(db, order_d365_id),
+        "writeoffs": db.q("SELECT * FROM writeoff_docs WHERE order_d365_id = ? ORDER BY created DESC", (order_d365_id,)),
         "progress": db.q("SELECT * FROM order_progress WHERE order_d365_id = ? ORDER BY time DESC", (order_d365_id,)),
         "charge_total": round(sum(p["total"] or 0 for p in charged), 2),
         "currency": next((p["total_text"][0] for p in parts if p["total_text"] and not p["total_text"][0].isdigit()), ""),

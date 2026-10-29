@@ -175,6 +175,19 @@ CREATE TABLE IF NOT EXISTS material_orders (
     warehouse TEXT DEFAULT ''
 );
 CREATE INDEX IF NOT EXISTS ix_mat_order ON material_orders(order_d365_id);
+-- D365 配件核销单（mcs_partswriteoffdoc），只读同步；核销后同步 ERP 得到 ERP 订单号
+CREATE TABLE IF NOT EXISTS writeoff_docs (
+    id TEXT PRIMARY KEY,
+    order_d365_id TEXT NOT NULL,
+    code TEXT DEFAULT '',
+    type TEXT DEFAULT '',
+    erp_code TEXT DEFAULT '',
+    erp_status TEXT DEFAULT '',
+    erp_message TEXT DEFAULT '',
+    material_code TEXT DEFAULT '',
+    created TEXT DEFAULT ''
+);
+CREATE INDEX IF NOT EXISTS ix_writeoff_order ON writeoff_docs(order_d365_id);
 -- D365 服务订单处理进度（mcs_serviceorderprocessingprogress，工程师在 D365 / App 里填的进展），只读同步
 CREATE TABLE IF NOT EXISTS order_progress (
     id TEXT PRIMARY KEY,

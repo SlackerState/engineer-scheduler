@@ -221,7 +221,7 @@ class Api:
     def order_parts(self, oid):
         o = self._db.one("SELECT d365_id FROM orders WHERE id=?", (int(oid),))
         if not o or not o["d365_id"]:
-            return {"parts": [], "materials": [], "borrows": [], "progress": [], "charge_total": 0, "currency": ""}
+            return {"parts": [], "materials": [], "borrows": [], "progress": [], "writeoffs": [], "charge_total": 0, "currency": ""}
         res = parts.order_parts(self._db, o["d365_id"])
         self._mat_link(res["materials"])
         return res
@@ -294,6 +294,16 @@ class Api:
         r = self._d365_call(self._d365.save_material, mid, data or {})
         self._sync.sync_parts([o["d365_id"]])
         return {**self.order_parts(oid), "saved": r}
+
+    def writeoff_list(self, oid):
+        o = self._d365_order(oid)
+        return self._d365_call(self._d365.writeoff_list, o["d365_id"])
+
+    def writeoff_parts(self, oid, part_ids, kind=1):
+        o = self._d365_order(oid)
+        n = self._d365_call(self._d365.writeoff, o["d365_id"], list(part_ids or []), int(kind))
+        self._sync.sync_parts([o["d365_id"]])
+        return {**self.order_parts(oid), "written_off": n}
 
     def submit_material(self, oid, mid):
         o = self._d365_order(oid)

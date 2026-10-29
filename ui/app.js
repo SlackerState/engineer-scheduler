@@ -721,6 +721,38 @@ function applyDialog(oid) {
   });
 }
 
+// 配件核销：列表来自 D365（Service_GetServicePartListApi），勾选后免费核销 / 报单核销
+function writeoffDialog(oid) {
+  modal(`<h2>配件核销</h2><div id="wo-body"><div class="empty">正在从 D365 读取可核销的配件…</div></div>
+    <div class="actions" id="wo-actions"><button data-close>关闭</button></div>`, async (box, close) => {
+    $('[data-close]', box).onclick = close;
+    const r = await safe(() => api('writeoff_list', oid));
+    if (!r) { close(); return; }
+    if (r.blocker || !r.items.length) {
+      $('#wo-body', box).innerHTML = `<div class="check ${r.blocker ? 'bad' : ''}">${esc(r.blocker || 'D365 里这单没有可核销的配件（已核销过，或借料还没发货 / 没有消耗）')}</div>`;
+      return;
+    }
+    $('#wo-body', box).innerHTML = `<p class="muted small" style="margin:0">勾选要核销的配件。英国这边一般用「免费核销」；核销后 D365 生成核销单并同步 ERP。</p>
+      <table class="grid compact"><thead><tr><th><input type="checkbox" id="wo-all" checked></th><th>行号</th><th>配件号</th><th>名称</th><th>消耗数量</th></tr></thead><tbody>` +
+      r.items.map(x => `<tr><td><input type="checkbox" class="wo-ck" value="${esc(x.id)}" checked></td><td class="mono">${esc(x.line)}</td>
+        <td class="mono">${esc(x.part_no)}</td><td>${esc(x.name)}</td><td>${esc(x.qty)}</td></tr>`).join('') + '</tbody></table>';
+    $('#wo-actions', box).innerHTML = `<button data-close>取消</button><button id="wo-report">报单核销</button><button class="primary" id="wo-free">免费核销</button>`;
+    $('[data-close]', box).onclick = close;
+    $('#wo-all', box).onchange = e => $$('.wo-ck', box).forEach(c => (c.checked = e.target.checked));
+    const go = async (kind, label) => {
+      const ids = $$('.wo-ck:checked', box).map(c => c.value);
+      if (!ids.length) { toast('请选择要核销的配件', true); return; }
+      if (!await ask(`把选中的 ${ids.length} 个配件在 D365 里做「${label}」？\n核销后不能再改这些配件的消耗。`, label)) return;
+      const res = await safe(() => api('writeoff_parts', oid, ids, kind));
+      if (!res) return;
+      close(); toast(`已${label} ${res.written_off} 个配件，D365 已生成核销单`);
+      loadOrderParts(oid); if (S.view === 'parts') loadParts();
+    };
+    $('#wo-free', box).onclick = () => go(1, '免费核销');
+    $('#wo-report', box).onclick = () => go(2, '报单核销');
+  });
+}
+
 // 借料单的 ERP 信息：审批后同步 ERP 得到 ERP 文档编号
 const erpHtml = m => m.sap_number ? `<div class="small">ERP <b class="mono">${esc(m.sap_number)}</b>${m.erp_status && m.erp_status !== '同步成功' ? ` <span class="muted">${esc(m.erp_status)}</span>` : ''}</div>`
   : m.erp_status && [20, 30, 50].includes(m.status_code) ? `<div class="small muted">ERP ${esc(m.erp_status)}${m.erp_message ? `：${esc(m.erp_message.slice(0, 80))}` : ''}</div>` : '';
@@ -810,6 +842,8 @@ async function loadOrderParts(oid, refresh) {
   // 加配件 / 申请借料：工单还没完工、没取消时可以（D365 会再按自己的规则检查一遍）
   const partsWritable = !PARTS_LOCKED.includes((S.curOrder || {}).d365_status_code) && !r.stale;
   const pending = r.parts.filter(p => !p.material_id);
+  // 配件核销：同 D365，工单「服务完工」且不是服务代理商模式时才有按钮（能核销哪些由 D365 判断）
+  const canWriteoff = (S.curOrder || {}).d365_status_code === 110 && !r.stale;
   const toSubmit = r.materials.filter(m => [10, 20, 40].includes(m.type_code) && [10, 40].includes(m.status_code));
   box.innerHTML = `
     <div class="row"><span class="muted small">共 ${r.parts.length} 个配件 · 收费 ${charged.length} 个，合计 <b>${money(r.charge_total, r.currency)}</b></span>
@@ -819,6 +853,8 @@ async function loadOrderParts(oid, refresh) {
       <button id="od-part-add">＋ 添加配件</button>
       <button id="od-apply" class="primary" ${pending.length ? '' : 'disabled title="没有待申请的配件"'}>申请借料${pending.length ? `（${pending.length} 个配件）` : ''}</button>
       <span class="muted small">新加的配件先是「待申请」，点申请借料后由 D365 生成向子公司借料单</span></div>` : ''}
+    ${canWriteoff ? `<div class="row"><button id="od-writeoff" class="primary">配件核销</button>
+      <span class="muted small">工单已服务完工：把已消耗的借料配件核销（同 D365 工单上的「配件核销」）</span></div>` : ''}
     ${r.parts.length ? `<table class="grid compact parts-tb"><thead><tr><th>配件</th><th title="确认数量">确认</th><th>消耗</th><th>剩余</th><th>收费</th><th>金额</th><th>借料单</th></tr></thead><tbody>` +
       r.parts.map(p => { const lock = lockOf(p); return `<tr data-part="${esc(p.id)}">
         <td><span class="mono small">${esc(p.part_no)}</span><div>${esc(p.name)}</div></td><td>${qty(p.confirm_qty)}</td>
@@ -834,6 +870,10 @@ async function loadOrderParts(oid, refresh) {
     ${r.borrows.length ? '<div class="sec small">借料归还</div>' + r.borrows.map(b => `<div class="row">${stateBadge(b.state)}
       <a class="lnk mono" data-open="${esc((r.materials.find(m => m.id === b.id) || {}).d365_link || '')}">${esc(b.code)} ↗</a>
       <span class="muted small">剩余 ${qty(b.remaining)} 件 · ${esc(b.return_status || '')}${b.returns.length ? ' · 归还单 ' + b.returns.map(x => esc(x.code) + '（' + esc(x.status) + '）').join('、') : ''}</span>${erpHtml(b)}</div>`).join('') : ''}
+    ${(r.writeoffs || []).length ? '<div class="sec small">核销单</div>' + r.writeoffs.map(w => `<div class="row">
+      <span class="badge bs-已用完">${esc(w.type || '核销')}</span><span class="mono">${esc(w.code)}</span>
+      <span class="muted small">${esc((w.created || '').slice(0, 10))}${w.material_code ? ' · 借料单 ' + esc(w.material_code) : ''}</span>
+      ${w.erp_code ? `<span class="small">ERP <b class="mono">${esc(w.erp_code)}</b></span>` : `<span class="small muted">ERP ${esc(w.erp_status || '未同步')}${w.erp_message ? '：' + esc(w.erp_message.slice(0, 80)) : ''}</span>`}</div>`).join('') : ''}
     ${toSubmit.length ? '<div class="sec small">待提交的借料单</div>' + toSubmit.map(m => `<div class="row">
       <span class="badge b-待处理">${esc(m.status)}</span><a class="lnk mono" data-open="${esc(m.d365_link || '')}">${esc(m.code || '新借料单')} ↗</a>
       <span class="muted small">${esc(m.type)}</span>
@@ -841,6 +881,7 @@ async function loadOrderParts(oid, refresh) {
   $('#od-parts-refresh').onclick = () => loadOrderParts(oid, true);
   if ($('#od-part-add')) $('#od-part-add').onclick = () => addPartDialog(oid);
   if ($('#od-apply')) $('#od-apply').onclick = () => applyDialog(oid);
+  if ($('#od-writeoff')) $('#od-writeoff').onclick = () => writeoffDialog(oid);
   // 改消耗：数值变了才显示「保存」；确认后写回 D365
   box.oninput = e => {
     if (!e.target.matches('input.cq')) return;
