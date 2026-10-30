@@ -126,7 +126,8 @@
     <span class="muted small">数据来自 D365（随「同步 D365」更新）；配件消耗可在工单详情里改，其它请点单据号到 D365 里操作</span>
   </header>
   <div id="p-borrow">
-    <div class="row chips" id="b-chips"></div>
+    <div class="row chips"><span class="row chips" id="b-chips" style="margin:0"></span>
+      <button id="b-email" style="margin-left:auto" title="借料单审批通过、拿到 ERP 号后，生成发给仓库的邮件内容">借料邮件</button></div>
     <div class="table-wrap"><table class="grid" id="b-table"></table></div>
   </div>
   <div id="p-charge" hidden>

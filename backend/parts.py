@@ -52,7 +52,7 @@ def borrow_state(mat: dict, remaining: float, order_status: str) -> str:
 
 def borrows(db: DB, order_d365_id: str | None = None) -> list[dict]:
     """所有借料单及其配件、剩余数量和归还状态。"""
-    sql = ("SELECT m.*, o.id AS order_id, o.service_order_no, o.udesk_no, o.customer, o.engineer, o.status AS order_status, "
+    sql = ("SELECT m.*, o.id AS order_id, o.service_order_no, o.udesk_no, o.customer, o.engineer, o.serial, o.status AS order_status, "
            "o.d365_status FROM material_orders m LEFT JOIN orders o ON o.d365_id = m.order_d365_id WHERE m.type_code = ?")
     params: list = [MAT_BORROW]
     if order_d365_id:

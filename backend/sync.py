@@ -7,7 +7,7 @@ from datetime import datetime, timedelta, timezone
 
 from . import logic
 from .browser import NeedLogin
-from .d365 import D365, FINAL_CODES, normalize
+from .d365 import D365, FINAL_CODES, MAT_BORROW, normalize
 from .db import DB
 
 D365_COLUMNS = ["udesk_no", "order_type", "d365_status", "d365_status_code", "appointment",
@@ -24,6 +24,7 @@ class Syncer:
     def __init__(self, db: DB, d365: D365):
         self.db, self.d365 = db, d365
         self.lock = threading.Lock()
+        self.new_erp: list[str] = []  # 最近一次配件同步里新拿到 ERP 号的借料单
         self.state = {"running": False, "last_run": "", "ok": None, "message": "尚未同步",
                       "need_login": False, "log": []}
         threading.Thread(target=self._auto_loop, name="auto-sync", daemon=True).start()
@@ -129,6 +130,9 @@ class Syncer:
             if full:
                 self.db.set_raw_setting("parts_synced_v", PARTS_SYNC_V)
             msg += f"；配件 {n_parts} 条、借料/归还单 {n_mats} 张"
+            if self.new_erp:
+                codes = "、".join(self.new_erp) if len(self.new_erp) <= 5 else f"等 {len(self.new_erp)} 张"
+                msg += f"；借料单 {codes} 已拿到 ERP 号（可在「配件 → 借料邮件」复制邮件）"
         except NeedLogin:
             raise
         except Exception as e:  # noqa: BLE001 - 配件同步失败不影响工单同步
@@ -147,6 +151,8 @@ class Syncer:
         wos = self.d365.writeoffs_for(order_ids)
         with self.db.lock:
             marks = ",".join("?" * len(order_ids))
+            had_erp = {r["id"] for r in self.db.q(f"SELECT id FROM material_orders WHERE order_d365_id IN ({marks}) "
+                                                  "AND sap_number <> ''", order_ids)}
             self.db.conn.execute(f"DELETE FROM parts WHERE order_d365_id IN ({marks})", order_ids)
             self.db.conn.execute(f"DELETE FROM material_orders WHERE order_d365_id IN ({marks})", order_ids)
             self.db.conn.execute(f"DELETE FROM order_progress WHERE order_d365_id IN ({marks})", order_ids)
@@ -158,6 +164,9 @@ class Syncer:
                     self.db.conn.execute(f"INSERT OR REPLACE INTO {table}({','.join(cols)}) "
                                          f"VALUES({','.join('?' * len(cols))})", [r[c] for c in cols])
             self.db.conn.commit()
+        # 借料单审批后拿到 ERP 号：同步结果里提示，可以去复制借料邮件
+        self.new_erp = [m["code"] for m in mats if m.get("sap_number") and m["id"] not in had_erp
+                        and m.get("type_code") == MAT_BORROW]
         return len(parts), len(mats)
 
     def upsert(self, row: dict, s: dict) -> bool:

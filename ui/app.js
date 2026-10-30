@@ -644,6 +644,77 @@ async function loadCharges() {
     : '<tr><td class="empty">这段时间没有配件记录</td></tr>';
 }
 
+// 借料邮件：借料单审批通过、拿到 ERP 号后，生成发给仓库的邮件（每位工程师一封），复制后粘贴到邮件里
+const hasErp = b => b.sap_number && b.status_code !== 60;
+
+function borrowEmailText(eng, list) {
+  return `Hi Team,\n\nPlease can you give these to ${eng}\n` +
+    list.map(b => `${b.code}, ${b.sap_number}${b.serial ? ` (${b.serial})` : ''}`).join('\n') + '\n';
+}
+
+// 先选中界面上的文本框用 execCommand 复制（点击当下同步执行，Edge 应用窗口和 Mac 窗口都可用），不行再用 Clipboard API
+async function copyText(ta) {
+  ta.focus(); ta.select();
+  let ok = false;
+  try { ok = document.execCommand('copy'); } catch (e) { ok = false; }
+  if (ok) return true;
+  try { await navigator.clipboard.writeText(ta.value); return true; } catch (e) { return false; }
+}
+
+// list：可选的借料单（都已有 ERP 号）；checked：默认勾选的借料单 id
+function borrowEmailDialog(list, checked) {
+  const sel = new Set(checked);
+  modal(`<h2>借料邮件</h2>
+    <p class="muted small" style="margin:0">借料单审批通过、拿到 ERP 号后，把下面的内容复制到邮件里发给仓库。每位工程师一封，框里的内容可以直接改。</p>
+    ${list.length > 1 ? `<div class="table-wrap" style="max-height:30vh"><table class="grid compact"><thead><tr><th></th><th>借料单</th><th>ERP 号</th>
+      <th>机器 SN</th><th>工程师</th><th>服务订单号</th><th>审批通过</th></tr></thead><tbody>` + list.map(b => `<tr>
+      <td><input type="checkbox" data-mid="${esc(b.id)}" ${sel.has(b.id) ? 'checked' : ''}></td>
+      <td class="mono nowrap">${esc(b.code)}</td><td class="mono nowrap">${esc(b.sap_number)}</td><td class="mono nowrap">${esc(b.serial || '')}</td>
+      <td class="nowrap">${esc(b.engineer || '')}</td><td class="mono nowrap">${esc(b.service_order_no || '')}</td>
+      <td class="nowrap">${esc((b.approval_time || '').slice(0, 16))}</td></tr>`).join('') + '</tbody></table></div>' : ''}
+    <div id="be-out" style="display:grid;gap:12px"></div>
+    <div class="actions"><button data-close>关闭</button></div>`, (box, close) => {
+    $('[data-close]', box).onclick = close;
+    const render = () => {
+      const groups = new Map();
+      list.filter(b => sel.has(b.id)).forEach(b => {
+        const eng = b.engineer || '';
+        if (!groups.has(eng)) groups.set(eng, []);
+        groups.get(eng).push(b);
+      });
+      $('#be-out', box).innerHTML = groups.size ? [...groups].map(([eng, bs], i) => `<div>
+        <div class="row"><b>${esc(eng || '（没有工程师）')}</b><span class="muted small">${bs.length} 张借料单</span>
+          <button class="primary" data-copy="${i}" style="margin-left:auto">复制</button></div>
+        <textarea data-text="${i}" rows="${bs.length + 5}" style="width:100%;font-family:inherit">${esc(borrowEmailText(eng || 'the engineer', bs))}</textarea></div>`).join('')
+        : '<div class="muted small">勾选上面的借料单</div>';
+    };
+    $('#be-out', box).onclick = async e => {
+      const b = e.target.closest('[data-copy]'); if (!b) return;
+      const ok = await copyText($(`[data-text="${b.dataset.copy}"]`, box));
+      toast(ok ? '已复制，粘贴到邮件里即可' : '复制失败，请在框里全选后复制', !ok);
+    };
+    box.addEventListener('change', e => {
+      const c = e.target.closest('[data-mid]'); if (!c) return;
+      c.checked ? sel.add(c.dataset.mid) : sel.delete(c.dataset.mid);
+      render();
+    });
+    render();
+  });
+}
+
+// 配件页「借料邮件」：最近 14 天审批通过、有 ERP 号的借料单，默认勾选今天通过的
+async function openBorrowEmail() {
+  const r = await safe(() => api('parts_borrows', ''));
+  if (!r) return;
+  const since = new Date(Date.now() - 14 * 864e5).toISOString().slice(0, 10);
+  const list = r.rows.filter(b => hasErp(b) && (b.approval_time || b.created || '').slice(0, 10) >= since)
+    .sort((a, b) => (b.approval_time || b.created || '').localeCompare(a.approval_time || a.created || ''));
+  if (!list.length) { toast('最近 14 天没有拿到 ERP 号的借料单（先点「同步 D365」更新）', true); return; }
+  const today = S.boot.today;
+  const checked = list.filter(b => (b.approval_time || '').startsWith(today)).map(b => b.id);
+  borrowEmailDialog(list, checked.length ? checked : [list[0].id]);
+}
+
 // 工单详情里的配件部分
 // 添加配件：在 D365 物料主数据里搜物料号 / 名称，选中后填数量，直接新增到工单的服务配件里
 function addPartDialog(oid) {
@@ -903,7 +974,8 @@ async function loadOrderParts(oid, refresh) {
           : `<span class="tag">待申请</span>${partsWritable ? ` <button class="link danger" data-del-part="${esc(p.id)}" title="从 D365 删除这条配件">删除</button>` : ''}`}</td></tr>`; }).join('') + '</tbody></table>' +
       '<div class="muted small">改「消耗」后点保存，直接写入 D365；剩余数量 = 确认 − 消耗，由 D365 重新计算。</div>'
       : '<div class="muted small">这单没有配件（或还没同步）</div>'}
-    ${r.borrows.length ? '<div class="sec small">借料归还</div>' + r.borrows.map(b => `<div class="row">${stateBadge(b.state)}
+    ${r.borrows.length ? `<div class="sec small row">借料归还${r.borrows.some(hasErp)
+      ? '<button id="od-borrow-email" style="margin-left:auto" title="借料单已拿到 ERP 号，生成发给仓库的邮件">借料邮件</button>' : ''}</div>` + r.borrows.map(b => `<div class="row">${stateBadge(b.state)}
       <a class="lnk mono" data-open="${esc((r.materials.find(m => m.id === b.id) || {}).d365_link || '')}">${esc(b.code)} ↗</a>
       <span class="muted small">剩余 ${qty(b.remaining)} 件 · ${esc(b.return_status || '')}${b.returns.length ? ' · 归还单 ' + b.returns.map(x => esc(x.code) + '（' + esc(x.status) + '）').join('、') : ''}</span>${erpHtml(b)}</div>`).join('') : ''}
     ${(r.writeoffs || []).length ? '<div class="sec small">核销单</div>' + r.writeoffs.map(w => `<div class="row">
@@ -918,6 +990,10 @@ async function loadOrderParts(oid, refresh) {
   if ($('#od-part-add')) $('#od-part-add').onclick = () => addPartDialog(oid);
   if ($('#od-apply')) $('#od-apply').onclick = () => applyDialog(oid);
   if ($('#od-writeoff')) $('#od-writeoff').onclick = () => writeoffDialog(oid);
+  if ($('#od-borrow-email')) $('#od-borrow-email').onclick = () => {
+    const list = r.borrows.filter(hasErp);
+    borrowEmailDialog(list, list.map(b => b.id));
+  };
   // 改消耗：数值变了才显示「保存」；确认后写回 D365
   box.oninput = e => {
     if (!e.target.matches('input.cq')) return;
@@ -1242,6 +1318,7 @@ async function init() {
   });
   // 配件页
   $('#p-tabs').onclick = e => { const b = e.target.closest('[data-tab]'); if (b) { S.partsTab = b.dataset.tab; loadParts(); } };
+  $('#b-email').onclick = openBorrowEmail;
   $('#b-chips').onclick = e => { const c = e.target.closest('[data-state]'); if (c) { S.borrowState = c.dataset.state; loadBorrows(); } };
   ['#c2-from', '#c2-to', '#c2-eng', '#c2-only'].forEach(s => ($(s).onchange = loadCharges));
   $('#c2-from').value = addDays(S.boot.today, -30);
