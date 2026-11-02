@@ -944,38 +944,59 @@ function writeoffDialog(oid) {
 const erpHtml = m => m.sap_number ? `<div class="small">ERP <b class="mono">${esc(m.sap_number)}</b>${m.erp_status && m.erp_status !== '同步成功' ? ` <span class="muted">${esc(m.erp_status)}</span>` : ''}</div>`
   : m.erp_status && [20, 30, 50].includes(m.status_code) ? `<div class="small muted">ERP ${esc(m.erp_status)}${m.erp_message ? `：${esc(m.erp_message.slice(0, 80))}` : ''}</div>` : '';
 
-// 借料单信息：同 D365 借料单「常规」页。已创建 / 已拒绝时可改仓库、订单原因、接受部分装运、申请原因，然后提交审批
+// 借料单信息：同 D365 借料单「常规」页。已创建 / 已拒绝时可改订单类型、订单原因、仓库、出库方式、接受部分装运、
+// 申请原因，然后提交审批。前四项必填，空着的按英国通常的填法预选（向子公司借料 / 紧急备件 / England Parts WH / 子公司出库）
 function materialDialog(oid, mid) {
   modal(`<h2>借料单信息</h2><div id="md-body"><div class="empty">正在从 D365 读取借料单…</div></div>
     <div class="actions" id="md-actions"><button data-close>关闭</button></div>`, async (box, close) => {
     $('[data-close]', box).onclick = close;
     const m = await safe(() => api('material_form', oid, mid));
     if (!m) { close(); return; }
-    const sel = (id, opts, cur, dis) => `<select id="${id}" ${dis ? 'disabled' : ''}>${opts.map(o =>
+    // 当前值为空时加一个「请选择」，否则浏览器会默认选中第一项、保存时误写进 D365
+    const sel = (id, opts, cur, dis) => `<select id="${id}" ${dis ? 'disabled' : ''}>${cur == null || cur === ''
+      ? '<option value="" selected>请选择</option>' : ''}${opts.map(o =>
       `<option value="${esc(o.value ?? o.id)}" ${String(o.value ?? o.id) === String(cur) ? 'selected' : ''}>${esc(o.label)}</option>`).join('')}</select>`;
     const ro = (l, v) => `<label>${l}<input value="${esc(v || '—')}" disabled></label>`;
     const ed = m.editable;
-    const whs = m.warehouses.length ? m.warehouses : [{id: m.warehouse_id, label: m.warehouse}];
+    const whs = m.warehouses.length ? m.warehouses : (m.warehouse_id ? [{id: m.warehouse_id, label: m.warehouse}] : []);
+    // 可编辑时，空着的必填项用默认值预选，并提示是预选的
+    const prefilled = [];
+    const pick = (cur, def, label) => {
+      if (!ed || (cur != null && cur !== '') || def == null || def === '') return cur;
+      prefilled.push(label);
+      return def;
+    };
+    const type = pick(m.type, m.defaults.type, '订单类型'), reason = pick(m.orderreason, m.defaults.orderreason, '订单原因');
+    const wh = pick(m.warehouse_id, m.defaults.warehouse_id, '仓库');  // 锁定时默认值就是同工单其它借料单的仓库
+    const outbound = pick(m.outbound_code, m.defaults.outbound, '出库方式');
     $('#md-body', box).innerHTML = `
       <div class="row"><b class="mono">${esc(m.code)}</b><span class="badge b-待处理">${esc(m.status)}</span>
         ${m.sap_number ? `<span>ERP 文档编号 <b class="mono">${esc(m.sap_number)}</b></span>` : ''}
         ${m.erp_status ? `<span class="muted small">同步 ERP：${esc(m.erp_status)}</span>` : ''}</div>
       ${m.erp_message && !m.sap_number ? `<div class="check bad">${esc(m.erp_message)}</div>` : ''}
       ${ed ? '' : '<p class="muted small" style="margin:0">借料单已提交，只能查看；要改请在 D365 里撤回审批。</p>'}
+      ${prefilled.length ? `<div class="check warn-box">D365 里${prefilled.join('、')}还空着，已按通常的填法预选，点保存后写入 D365，不对可以先改。</div>` : ''}
       <div class="form two">
-        <label>仓库 *${sel('md-wh', whs, m.warehouse_id, !ed || !!m.warehouse_lock)}${m.warehouse_lock ? `<span class="muted small">${esc(m.warehouse_lock)}</span>` : ''}</label>
-        <label>订单原因 *${sel('md-or', m.orderreasons, m.orderreason, !ed)}</label>
+        <label>订单类型 *${sel('md-ty', m.types, type, !ed)}</label>
+        <label>订单原因 *${sel('md-or', m.orderreasons, reason, !ed)}</label>
+        <label>仓库 *${sel('md-wh', whs, wh, !ed || !!m.warehouse_lock)}${m.warehouse_lock ? `<span class="muted small">${esc(m.warehouse_lock)}</span>` : ''}</label>
+        <label>出库方式 *${sel('md-ob', m.outbounds, outbound, !ed)}</label>
         <label>接受部分装运${sel('md-pa', m.partials, m.partial, !ed)}</label>
         <label>申请原因<input id="md-rs" value="${esc(m.reason)}" ${ed ? '' : 'disabled'} placeholder="如 Repairs on site"></label>
         ${ro('卖方', m.seller)}${ro('发货工厂', m.factory)}${ro('客户', m.customer)}${ro('成本中心', m.costcenter)}
-        ${ro('出库方式', m.outbound)}${ro('供应方式', m.supply)}
+        ${ro('供应方式', m.supply)}
         ${m.approval_time ? ro('审批通过时间', m.approval_time) : ''}
       </div>`;
     if (!ed) return;
     $('#md-actions', box).innerHTML = `<button data-close>取消</button><button id="md-save">只保存</button><button class="primary" id="md-submit">保存并提交审批</button>`;
     $('[data-close]', box).onclick = close;
-    const data = () => ({warehouse_id: $('#md-wh', box).value, orderreason: $('#md-or', box).value, partial: $('#md-pa', box).value, reason: $('#md-rs', box).value.trim()});
+    const data = () => ({type: $('#md-ty', box).value, orderreason: $('#md-or', box).value, warehouse_id: $('#md-wh', box).value,
+      outbound_code: $('#md-ob', box).value, partial: $('#md-pa', box).value, reason: $('#md-rs', box).value.trim()});
     const save = async () => {
+      const d = data();
+      const miss = [['type', '订单类型'], ['orderreason', '订单原因'], ['warehouse_id', '仓库'], ['outbound_code', '出库方式']]
+        .filter(([k]) => !d[k]).map(([, l]) => l);
+      if (miss.length) { toast(`请选择${miss.join('、')}`, true); return null; }
       const r = await safe(() => api('save_material', oid, mid, data()));
       if (r) toast(r.saved.changed ? `已保存到 D365：借料单 ${r.saved.code}` : '没有改动');
       return r;
@@ -1056,7 +1077,8 @@ async function loadOrderParts(oid, refresh) {
   const pending = r.parts.filter(p => !p.material_id);
   // 配件核销：同 D365，工单「服务完工」且不是服务代理商模式时才有按钮（能核销哪些由 D365 判断）
   const canWriteoff = (S.curOrder || {}).d365_status_code === 110 && !r.stale;
-  const toSubmit = r.materials.filter(m => [10, 20, 40].includes(m.type_code) && [10, 40].includes(m.status_code));
+  // 「申请备件」生成的借料单订单类型可能还空着，也要能填写提交
+  const toSubmit = r.materials.filter(m => (m.type_code == null || [10, 20, 40].includes(m.type_code)) && [10, 40].includes(m.status_code));
   box.innerHTML = `
     <div class="row"><span class="muted small">共 ${r.parts.length} 个配件 · 收费 ${charged.length} 个，合计 <b>${money(r.charge_total, r.currency)}</b></span>
       <span id="od-parts-sync" class="muted small ${r.stale ? 'warn' : ''}" title="${esc(r.stale_detail || '')}">${esc(r.stale || '')}</span>

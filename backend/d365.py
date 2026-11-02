@@ -296,7 +296,8 @@ class D365:
         return str(res or "")
 
     def _material_live(self, mid: str) -> dict:
-        sel = "mcs_code,mcs_type,mcs_orderstatus,_mcs_seller_value,_mcs_customer_value,_mcs_serviceorderid_value"
+        sel = ("mcs_code,mcs_type,mcs_orderstatus,_mcs_seller_value,_mcs_customer_value,_mcs_serviceorderid_value,"
+               "mcs_orderreason,mcs_outboundmethod,_mcs_warehouse_value")
         return self.browser.fetch_json(self.base, self._api(f"mcs_repairmaterialorders({mid})?$select={sel}"))
 
     def material_check(self, mid: str) -> dict:
@@ -308,6 +309,12 @@ class D365:
             blockers.append(f"{code} 当前状态为「{m.get('mcs_orderstatus' + FV)}」，只有已创建或已拒绝的单可以提交审批")
         if typ == MAT_RETURN:
             blockers.append("归还单请在 D365 里提交")
+        # 借料单表单上的必填项（D365 表单会拦着不让保存，接口不拦，所以这里先查）
+        empty = [label for key, label in (("mcs_type", "订单类型"), ("mcs_orderreason", "订单原因"),
+                                         ("mcs_outboundmethod", "出库方式"), ("_mcs_warehouse_value", "仓库"))
+                 if m.get(key) in (None, "")]
+        if empty:
+            blockers.append(f"借料单还没填{'、'.join(empty)}，请先在借料单信息里填好保存")
         so = m.get("_mcs_serviceorderid_value")
         in_site = True
         if so:
@@ -359,13 +366,15 @@ class D365:
         st = m.get("mcs_orderstatus")
         editable = st in (10, 40) and m.get("mcs_type") != MAT_RETURN
         so = m.get("_mcs_serviceorderid_value")
-        lock = ""
+        lock, lock_wh = "", ""
         if so:
             flt = f"statecode eq 0 and mcs_orderstatus ne 60 and mcs_repairmaterialorderid ne {mid} and _mcs_serviceorderid_value eq {so}"
             others = self.browser.fetch_json(self.base, self._api(
-                f"mcs_repairmaterialorders?$select=mcs_code&$filter={quote(flt)}")).get("value", [])
+                f"mcs_repairmaterialorders?$select=mcs_code,_mcs_warehouse_value&$filter={quote(flt)}")).get("value", [])
             if others:
                 lock = "这张工单已有其它借料单（" + "、".join(o.get("mcs_code") or "" for o in others[:3]) + "），D365 锁定卖方/工厂/仓库与它们一致"
+                # 仓库要和它们一致：这张单的仓库还空着时就用它们的
+                lock_wh = next((o["_mcs_warehouse_value"] for o in others if o.get("_mcs_warehouse_value")), "")
         whs = []
         if m.get("_mcs_factory_value"):
             wf = (f"statecode eq 0 and _mcs_factoryid_value eq {m['_mcs_factory_value']} and Microsoft.Dynamics.CRM."
@@ -374,8 +383,16 @@ class D365:
                    for w in self.browser.fetch_json(self.base, self._api(
                        f"mcs_warehouses?$select=mcs_warehouseid,mcs_name,mcs_code&$orderby=mcs_code&$filter={quote(wf)}")).get("value", [])]
         f = lambda k: m.get(k + FV) or ""  # noqa: E731
+        types = [o for o in self._options("mcs_type") if o["value"] != MAT_RETURN]  # 归还单不在这里建
+        # 空着的字段按英国借料单通常的填法给默认值（界面上预先选好，保存时写入）
+        eng = next((w["id"] for w in whs if MAT_DEFAULT_WAREHOUSE in w["label"]), "")
+        defaults = {"type": MAT_BORROW, "orderreason": MAT_DEFAULT_REASON, "outbound": MAT_DEFAULT_OUTBOUND,
+                    "warehouse_id": lock_wh if lock else eng}
         return {
             "id": mid, "code": m.get("mcs_code"), "status": f("mcs_orderstatus"), "status_code": st, "editable": editable,
+            "type": m.get("mcs_type"), "types": types,
+            "outbound_code": m.get("mcs_outboundmethod"), "outbounds": self._options("mcs_outboundmethod"),
+            "defaults": defaults,
             "warehouse_lock": lock, "seller": f("_mcs_seller_value"), "factory": f("_mcs_factory_value"),
             "customer": f("_mcs_customer_value"), "outbound": f("mcs_outboundmethod"), "supply": f("mcs_supplymethod"),
             "costcenter": f("_mcs_costcenter_value"),
@@ -394,7 +411,9 @@ class D365:
         body: dict = {}
         if "reason" in data and (data["reason"] or "") != cur["reason"]:
             body["mcs_reasonforapplication"] = data["reason"] or None
-        for key, attr, opts in (("orderreason", "mcs_orderreason", cur["orderreasons"]),
+        for key, attr, opts in (("type", "mcs_type", cur["types"]),
+                                ("orderreason", "mcs_orderreason", cur["orderreasons"]),
+                                ("outbound_code", "mcs_outboundmethod", cur["outbounds"]),
                                 ("partial", "mcs_acceptpartialshipment", cur["partials"])):
             if data.get(key) not in (None, "") and int(data[key]) != cur[key]:
                 if int(data[key]) not in [o["value"] for o in opts]:
@@ -402,7 +421,7 @@ class D365:
                 body[attr] = int(data[key])
         wh = data.get("warehouse_id")
         if wh and wh != cur["warehouse_id"]:
-            if cur["warehouse_lock"]:
+            if cur["warehouse_lock"] and wh != cur["defaults"]["warehouse_id"]:
                 raise RuntimeError(cur["warehouse_lock"])
             if wh not in [w["id"] for w in cur["warehouses"]]:
                 raise RuntimeError("这个仓库不属于借料单的发货工厂")
@@ -559,6 +578,10 @@ PROGRESS_SELECT = ["mcs_serviceorderprocessingprogressid", "_mcs_serviceorder_va
                    "mcs_processingtime", "createdon", "_ownerid_value", "statecode"]
 # mcs_repairmaterialorder.mcs_type：10 向事业部领料 · 20 向子公司借料 · 30 归还单 · 40 向子公司领料 · 50 向寄售库领料
 MAT_BORROW, MAT_RETURN = 20, 30
+# 借料单空着时的默认填法（英国：订单原因 紧急备件、出库方式 子公司出库、仓库 England Parts WH）
+MAT_DEFAULT_REASON = 803750001
+MAT_DEFAULT_OUTBOUND = 10
+MAT_DEFAULT_WAREHOUSE = "England Parts"
 # 这些工单状态下不允许改配件消耗：已取消、提交审批、服务完工、远程完工、异常完工
 CONSUMPTION_LOCKED = {15, 105, 110, 130, 140}
 
