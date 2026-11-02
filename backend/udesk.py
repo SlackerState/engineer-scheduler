@@ -12,12 +12,10 @@
 """
 from __future__ import annotations
 
-import json
 import time
-import urllib.error
-import urllib.parse
-import urllib.request
 from datetime import datetime, timedelta
+
+from . import net
 
 # 来源渠道（插件里的「来源渠道」，字段 isInitByEng）
 SOURCE_CHANNELS = [{"value": 0, "label": "本地热线"}, {"value": 2, "label": "即时消息"}, {"value": 1, "label": "工程师转接"}]
@@ -35,27 +33,15 @@ class Udesk:
     def base(self) -> str:
         return (self.get_settings().get("udesk_mid_url") or "https://sanyi-mid.s5.udesk.cn/sanyi").rstrip("/")
 
-    def _q(self, params: dict | None = None) -> str:
+    def _q(self, params: dict | None = None) -> dict:
         s = self.get_settings()
         p = dict(params or {}, language="zh-cn", timeZone=s.get("udesk_timezone") or "Europe/London")
-        return urllib.parse.urlencode({k: ("" if v is None else v) for k, v in p.items()})
+        return {k: ("" if v is None else v) for k, v in p.items()}
 
     def _call(self, method: str, path: str, params: dict | None = None, body: dict | None = None):
-        url = f"{self.base}{path}?{self._q(params)}"
-        data = json.dumps(body, ensure_ascii=False).encode() if body is not None else None
-        req = urllib.request.Request(url, data=data, method=method,
-                                     headers={"Content-Type": "application/json;charset=UTF-8", "Accept": "application/json"})
-        try:
-            with urllib.request.urlopen(req, timeout=30) as r:
-                j = json.loads(r.read() or b"{}")
-        except urllib.error.HTTPError as e:
-            try:
-                msg = json.loads(e.read() or b"{}").get("message")
-            except ValueError:
-                msg = ""
-            raise RuntimeError(f"Udesk 中间件返回错误 {e.code}：{msg or e.reason}") from e
-        except urllib.error.URLError as e:
-            raise RuntimeError(f"连不上 Udesk 中间件（{e.reason}），请检查网络") from e
+        r = net.request("Udesk 中间件", method, f"{self.base}{path}", params=self._q(params), json=body,
+                        headers={"Content-Type": "application/json;charset=UTF-8", "Accept": "application/json"})
+        j = net.json_of(net.check("Udesk 中间件", r))
         if isinstance(j, dict) and j.get("succeed") is False:
             raise RuntimeError(j.get("message") or "Udesk 中间件处理失败")
         return j.get("data") if isinstance(j, dict) else j

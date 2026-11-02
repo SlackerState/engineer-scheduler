@@ -12,9 +12,8 @@ from __future__ import annotations
 import base64
 import json
 import time
-import urllib.error
-import urllib.request
 
+from . import net
 from .browser import NeedLogin
 
 SIS_URL = "https://sis-global.sanygroup.com"
@@ -70,17 +69,10 @@ class Sis:
 
     def _call(self, path: str, body: dict):
         tok, c = self._token()
-        req = urllib.request.Request(
-            f"{self.base}/api-gateway{path}", data=json.dumps(body).encode(), method="POST",
-            headers={"Content-Type": "application/json;charset=UTF-8", "Accept": "application/json",
-                     "Authorization": tok, "Authorization-userId": str(c["userId"])})
-        try:
-            with urllib.request.urlopen(req, timeout=30) as r:
-                j = json.loads(r.read() or b"{}")
-        except urllib.error.HTTPError as e:
-            raise RuntimeError(f"SIS 返回错误 {e.code}") from e
-        except urllib.error.URLError as e:
-            raise RuntimeError(f"连不上 SIS（{e.reason}），请检查网络") from e
+        r = net.request("SIS", "POST", f"{self.base}/api-gateway{path}", json=body,
+                        headers={"Content-Type": "application/json;charset=UTF-8", "Accept": "application/json",
+                                 "Authorization": tok, "Authorization-userId": str(c["userId"])})
+        j = net.json_of(net.check("SIS", r))
         code = str(j.get("code"))
         if code == "10001":
             raise NeedLogin("SIS 登录已过期")

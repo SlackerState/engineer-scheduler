@@ -15,10 +15,10 @@ import subprocess
 import sys
 import tempfile
 import threading
-import urllib.request
 import zipfile
 from pathlib import Path
 
+from . import net
 from .db import app_dir
 from .version import __version__
 
@@ -64,10 +64,8 @@ class Updater:
         return self.get_settings().get("update_api_url") or f"https://api.github.com/repos/{REPO}/releases/latest"
 
     def check(self) -> dict:
-        req = urllib.request.Request(self._api(), headers={"Accept": "application/vnd.github+json",
-                                                           "User-Agent": "EngineerScheduler"})
-        with urllib.request.urlopen(req, timeout=15) as r:
-            rel = json.loads(r.read())
+        r = net.request("GitHub", "GET", self._api(), headers={"Accept": "application/vnd.github+json"}, timeout=15)
+        rel = net.check("GitHub", r).json()
         latest = rel.get("tag_name") or ""
         want = asset_name()
         asset = next((a for a in rel.get("assets", []) if a.get("name") == want), None)
@@ -101,11 +99,10 @@ class Updater:
             else:
                 work = Path(tempfile.mkdtemp(prefix="es-update-"))
             zpath = work / "update.zip"
-            req = urllib.request.Request(self.state["url"], headers={"User-Agent": "EngineerScheduler"})
-            with urllib.request.urlopen(req, timeout=60) as r, open(zpath, "wb") as f:
+            with net.stream("GitHub", self.state["url"], timeout=60) as r, open(zpath, "wb") as f:
                 total = int(r.headers.get("Content-Length") or self.state["size"] or 0)
                 done = 0
-                while chunk := r.read(256 * 1024):
+                for chunk in r.iter_bytes(256 * 1024):
                     f.write(chunk)
                     done += len(chunk)
                     if total:

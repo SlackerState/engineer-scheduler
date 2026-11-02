@@ -54,6 +54,24 @@ async function safe(fn) {
   try { return await fn(); } catch (e) { toast(e.message || String(e), true); }
 }
 
+// 选项多的下拉框换成能打字筛选的（Tom Select），原来的 <select> 还在，取值、change/input 事件照旧。
+// 下拉框内容重建后再调一次，同步新选项。下拉列表挂在 body 上，免得在弹窗、表头里被裁掉
+const SEARCH_MIN = 10;
+const tsAll = new Set();
+function searchable(root = document) {
+  for (const ts of tsAll) if (!ts.input.isConnected) { ts.destroy(); tsAll.delete(ts); }  // 已经被重画掉的
+  for (const s of root instanceof HTMLSelectElement ? [root] : $$('select', root)) {
+    if (s.tomselect) { s.tomselect.clearOptions(() => false); s.tomselect.sync(); continue; }  // sync 只加不删，先清掉旧选项
+    if (s.options.length < SEARCH_MIN || 'plain' in s.dataset) continue;
+    tsAll.add(new TomSelect(s, {
+      dropdownParent: 'body', allowEmptyOption: true, maxOptions: null,
+      render: {no_results: () => '<div class="no-results">没有匹配的</div>'},
+      onType(str) { this.wrapper.classList.toggle('typing', !!str); },  // 打字时不显示原来选中的那项
+      onDropdownClose() { this.wrapper.classList.remove('typing'); },
+    }));
+  }
+}
+
 // 弹窗：每次新建一层，确认框可以叠在对话框上面（关掉确认框后对话框还在）。
 // sticky：填表的对话框点外面不关（否则在输入框里拖选文字、鼠标松在框外时会误关，填的内容就没了）
 function modal(html, onMount, {sticky = false} = {}) {
@@ -86,6 +104,7 @@ async function refreshEngineers() {
   $('#o-eng').innerHTML = '<option value="">全部工程师</option>' +
     S.engineers.map(e => `<option>${esc(e.name)}</option>`).join('');
   $('#o-eng').value = cur;
+  searchable($('#o-eng'));
 }
 
 function show(view) {
@@ -263,6 +282,7 @@ function createOrderDialog() {
       const rows = await safe(() => api('udesk_engineers', v('#co-eng-kw'), f.country)) || [];
       $('#co-eng', box).innerHTML = `<option value="">不指定</option>` + rows.map(e => `<option value="${esc(e.id)}" data-name="${esc(e.name)}">${esc(e.name)}</option>`).join('');
       if (rows.length) $('#co-eng', box).selectedIndex = 1; else toast('没有找到工程师', true);
+      searchable($('#co-eng', box));
     };
     $('#co-ok', box).onclick = async () => {
       const fm = form();
@@ -536,6 +556,7 @@ async function loadCreated() {
           `<option ${S.cFilter[k] === v ? 'selected' : ''}>${esc(v)}</option>`).join('')}</select>`
       : `<input type="search" data-cf="${k}" placeholder="筛选${esc(label)}" value="${esc(S.cFilter[k] || '')}">`}</th>`).join('')}</tr>
     </thead><tbody></tbody>`;
+  searchable(t.tHead);
   t.tHead.oninput = e => {
     const k = e.target.dataset.cf; if (!k) return;
     if (e.target.value.trim()) S.cFilter[k] = e.target.value; else delete S.cFilter[k];
@@ -599,6 +620,7 @@ async function loadParts() {
   const cur = $('#c2-eng').value;
   $('#c2-eng').innerHTML = '<option value="">全部工程师</option>' + S.engineers.map(e => `<option>${esc(e.name)}</option>`).join('');
   $('#c2-eng').value = cur;
+  searchable($('#c2-eng'));
   return loadCharges();
 }
 
@@ -778,9 +800,9 @@ function partInfoDialog(no, name) {
       if (r.need_login) { loginPrompt(body, 'SIS', 'sis_login', 'SIS 登录 12 小时有效', loadPhotos); return; }
       if (!r.photos.length) { body.innerHTML = '<div class="empty">SIS 里这个配件没有图片</div>'; return; }
       let cur = 0;
-      body.innerHTML = `<div class="ph-big"><img id="ph-img" alt="${esc(no)}"></div>
+      body.innerHTML = `<div class="ph-big" title="点击放大查看"><img id="ph-img" alt="${esc(no)}"></div>
         ${r.photos.length > 1 ? `<div class="ph-thumbs">${r.photos.map((p, i) => `<img src="${esc(p.thumb)}" data-i="${i}" loading="lazy" alt="">`).join('')}</div>` : ''}
-        <div class="row"><span class="muted small" id="ph-n"></span>
+        <div class="row"><span class="muted small" id="ph-n"></span><span class="muted small">点图片可放大、拖动、旋转</span>
           <button class="link" id="ph-open" style="margin-left:auto">在浏览器打开原图 ↗</button></div>`;
       const show = i => {
         cur = i;
@@ -788,13 +810,27 @@ function partInfoDialog(no, name) {
         $$('.ph-thumbs img', box).forEach(x => x.classList.toggle('on', +x.dataset.i === i));
         $('#ph-n', box).textContent = `${i + 1} / ${r.photos.length}`;
       };
-      body.onclick = e => { const t = e.target.closest('[data-i]'); if (t) show(+t.dataset.i); };
+      body.onclick = e => {
+        const t = e.target.closest('[data-i]');
+        if (t) show(+t.dataset.i); else if (e.target.id === 'ph-img') viewPhotos(r.photos, cur, no);
+      };
       $('#ph-open', box).onclick = () => api('open_url', r.photos[cur].full);
       show(0);
     };
     loadStock();
     loadPhotos();
   });
+}
+
+// 全屏看原图（Viewer.js）：滚轮缩放、拖动、旋转，左右键切换，Esc 关闭
+function viewPhotos(photos, index, no) {
+  const list = document.createElement('div');
+  list.innerHTML = photos.map((p, i) => `<img src="${esc(p.thumb)}" data-full="${esc(p.full)}" alt="${esc(no)}  ${i + 1} / ${photos.length}">`).join('');
+  const v = new Viewer(list, {
+    url: 'data-full', zIndex: 80, title: [1, img => img.alt], navbar: photos.length > 1, hidden: () => v.destroy(),
+    toolbar: {zoomIn: 1, zoomOut: 1, oneToOne: 1, reset: 1, prev: photos.length > 1, next: photos.length > 1, rotateLeft: 1, rotateRight: 1},
+  });
+  v.view(index);
 }
 
 // 工单详情里的配件部分
@@ -987,6 +1023,7 @@ function materialDialog(oid, mid) {
         ${ro('供应方式', m.supply)}
         ${m.approval_time ? ro('审批通过时间', m.approval_time) : ''}
       </div>`;
+    searchable(box);
     if (!ed) return;
     $('#md-actions', box).innerHTML = `<button data-close>取消</button><button id="md-save">只保存</button><button class="primary" id="md-submit">保存并提交审批</button>`;
     $('[data-close]', box).onclick = close;
@@ -1514,7 +1551,7 @@ async function init() {
     const el = e.target.closest('[data-order]');
     if (el && !e.target.closest('#v-orders')) openOrder(+el.dataset.order);
   });
-  document.addEventListener('keydown', e => { if (e.key === 'Escape') { $('#menu').hidden = true; $('#drawer').hidden = true; } });
+  document.addEventListener('keydown', e => { if (e.key === 'Escape' && !$('.viewer-container') && !e.target.closest?.('.ts-wrapper')) { $('#menu').hidden = true; $('#drawer').hidden = true; } });
 
   // 今日
   $('#t-day').onchange = loadToday;

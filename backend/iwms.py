@@ -14,12 +14,10 @@
 """
 from __future__ import annotations
 
-import json
 import time
-import urllib.error
 import urllib.parse
-import urllib.request
 
+from . import net
 from .browser import NeedLogin
 
 WEB_URL = "https://oswms-deu.sanygroup.com"
@@ -49,24 +47,11 @@ class Iwms:
         tok = token or self.get_settings().get("iwms_token") or ""
         if not tok:
             raise NeedLogin("iWMS 未登录")
-        req = urllib.request.Request(
-            self.api + path, method=method, data=json.dumps(body).encode() if body is not None else None,
-            headers={"Authorization": f"bearer {tok}", "Content-Type": "application/json", "Accept": "application/json"})
-        try:
-            with urllib.request.urlopen(req, timeout=30) as r:
-                raw = r.read()
-        except urllib.error.HTTPError as e:
-            if e.code == 401:
-                raise NeedLogin("iWMS 登录已过期") from e
-            try:
-                msg = json.loads(e.read() or b"{}")
-                msg = msg.get("message") or msg.get("requestMessage") or ""
-            except ValueError:
-                msg = ""
-            raise RuntimeError(f"iWMS 返回错误 {e.code}{'：' + msg if msg else ''}") from e
-        except urllib.error.URLError as e:
-            raise RuntimeError(f"连不上 iWMS（{e.reason}），请检查网络") from e
-        data = json.loads(raw or b"{}")
+        r = net.request("iWMS", method, self.api + path, json=body,
+                        headers={"Authorization": f"bearer {tok}", "Accept": "application/json"})
+        if r.status_code == 401:
+            raise NeedLogin("iWMS 登录已过期")
+        data = net.json_of(net.check("iWMS", r))
         if isinstance(data, dict) and data.get("failed"):
             raise RuntimeError(data.get("message") or "iWMS 处理失败")
         return data
