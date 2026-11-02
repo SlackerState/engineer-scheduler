@@ -4,6 +4,7 @@ from __future__ import annotations
 import base64
 import json
 import threading
+import time
 import webbrowser
 from datetime import date, datetime, timedelta
 
@@ -19,6 +20,7 @@ from .updater import Updater
 from .version import __version__
 
 RISK_OPEN = ("overdue", "soon", "plan_late")
+AUTO_REFRESH_GAP = 60  # 秒
 # 打开详情时从 D365 刷新，这些字段变了就重新显示详情
 ORDER_LIVE_KEYS = ("engineer", "status", *D365_COLUMNS)
 
@@ -30,6 +32,7 @@ class Api:
         self._d365 = D365(self._browser, self._db.settings)
         self._udesk = Udesk(self._db.settings)
         self._sis = Sis(self._browser, self._db.settings)
+        self._refreshed: dict[int, float] = {}  # 工单 id → 上次打开详情时从 D365 刷新的时间
         self._iwms = Iwms(self._browser, self._db.settings, self._db.set_raw_setting)
         self._sync = Syncer(self._db, self._d365)
         self._updater = Updater(self._db.settings)
@@ -365,10 +368,14 @@ class Api:
         """从 D365 重新读取这一单（工程师、状态、时间等）和它的配件、借料/归还单。
         quiet：打开详情时的自动刷新，失败就用本地数据。工单本身有变化时返回 order_changed，界面据此重新显示。"""
         o = self._d365_order(oid)
+        # 打开详情时的自动刷新：同一单 1 分钟内刚从 D365 读过就不再读（连点、改派后重开详情时）
+        if quiet and time.time() - self._refreshed.get(o["id"], 0) < AUTO_REFRESH_GAP:
+            return self.order_parts(oid)
         before = self._db.one("SELECT * FROM orders WHERE id=?", (o["id"],))
         try:
             self._refresh_from_d365([o["d365_id"]])
             self._sync.sync_parts([o["d365_id"]])
+            self._refreshed[o["id"]] = time.time()
         except Exception as e:  # noqa: BLE001
             if not quiet:
                 if isinstance(e, NeedLogin):

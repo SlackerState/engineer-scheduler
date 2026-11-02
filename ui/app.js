@@ -327,7 +327,7 @@ async function openOrder(id) {
   if ($('#od-open')) $('#od-open').onclick = () => api('open_url', o.d365_link);
   S.curOrder = o;
   $('#od-form').addEventListener('input', () => { $('#od-form').dataset.dirty = '1'; });
-  if (fromD365) loadOrderParts(o.id).then(() => loadOrderParts(o.id, 'auto'));
+  if (fromD365) loadOrderParts(o.id).then(() => autoRefreshOrder(o.id));
   const reopen = () => { refreshView(); openOrder(o.id); };
   if ($('#od-plan-save')) $('#od-plan-save').onclick = () => safe(async () => {
     const day = $('#od-plan-day').value;
@@ -999,6 +999,24 @@ async function submitMaterial(oid, mid) {
   if (!await ask(`${warn}把借料单 ${c.code}（${c.parts} 个配件）提交审批？`, '提交审批')) return;
   const res = await safe(() => api('submit_material', oid, mid));
   if (res) { toast(`借料单 ${res.submitted} 已提交审批`); loadOrderParts(oid); if (S.view === 'parts') loadParts(); }
+}
+
+// 打开详情后在后台读 D365 最新数据。同一时间只发一个：D365 请求在后台排队执行、一单要好几秒，
+// 连点多单时排队的请求会占满浏览器到本地服务的连接（同一地址最多 6 个），连打开工单都卡住；
+// 所以连点时只刷新最后打开、还开着的那一单
+function autoRefreshOrder(oid) {
+  S.autoNext = oid;
+  if (S.autoBusy) return;
+  S.autoBusy = true;
+  (async () => {
+    try {
+      while (S.autoNext != null) {
+        const id = S.autoNext;
+        S.autoNext = null;
+        if ((S.curOrder || {}).id === id && !$('#drawer').hidden) await loadOrderParts(id, 'auto');
+      }
+    } finally { S.autoBusy = false; }
+  })();
 }
 
 // refresh：true 手动从 D365 刷新；'auto' 打开详情后在后台读 D365 最新数据（失败不打扰，保留本地数据）
