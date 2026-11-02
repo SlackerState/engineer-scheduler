@@ -715,6 +715,50 @@ async function openBorrowEmail() {
   borrowEmailDialog(list, checked.length ? checked : [list[0].id]);
 }
 
+// SIS 配件图片：按物料号查 SIS（三一服务信息系统）里的图片。SIS 登录 12 小时有效，过期了在这里重新登录
+function partPhotosDialog(no, name) {
+  modal(`<h2>配件图片 <span class="mono">${esc(no)}</span></h2>
+    <div class="muted small">${esc(name || '')}${name ? ' · ' : ''}图片来自 SIS</div>
+    <div id="ph-body"><div class="empty">正在查 SIS…</div></div>
+    <div class="actions"><button data-close>关闭</button></div>`, (box, close) => {
+    $('[data-close]', box).onclick = close;
+    const load = async () => {
+      const body = $('#ph-body', box);
+      body.innerHTML = '<div class="empty">正在查 SIS…</div>';
+      const r = await safe(() => api('part_photos', no));
+      if (!r) { body.innerHTML = '<div class="empty">没查到，稍后再试</div>'; return; }
+      if (r.need_login) {
+        body.innerHTML = `<div class="check warn-box">SIS 未登录或登录已过期（SIS 登录 12 小时有效）。点「登录 SIS」会打开 SIS 登录窗口，请在窗口里登录，登录后窗口会自动关闭。</div>
+          <div class="row"><button class="primary" id="ph-login">登录 SIS</button></div>`;
+        $('#ph-login', box).onclick = async () => {
+          const b = $('#ph-login', box);
+          b.disabled = true; b.textContent = '请在弹出的窗口里登录 SIS…';
+          const s = await safe(() => api('sis_login'));
+          if (s && s.logged_in) { toast(`SIS 已登录（${s.expires} 前有效）`); load(); }
+          else { b.disabled = false; b.textContent = '登录 SIS'; }
+        };
+        return;
+      }
+      if (!r.photos.length) { body.innerHTML = '<div class="empty">SIS 里这个配件没有图片</div>'; return; }
+      let cur = 0;
+      body.innerHTML = `<div class="ph-big"><img id="ph-img" alt="${esc(no)}"></div>
+        ${r.photos.length > 1 ? `<div class="ph-thumbs">${r.photos.map((p, i) => `<img src="${esc(p.thumb)}" data-i="${i}" loading="lazy" alt="">`).join('')}</div>` : ''}
+        <div class="row"><span class="muted small" id="ph-n"></span>
+          <button class="link" id="ph-open" style="margin-left:auto">在浏览器打开原图 ↗</button></div>`;
+      const show = i => {
+        cur = i;
+        $('#ph-img', box).src = r.photos[i].thumb;
+        $$('.ph-thumbs img', box).forEach(x => x.classList.toggle('on', +x.dataset.i === i));
+        $('#ph-n', box).textContent = `${i + 1} / ${r.photos.length}`;
+      };
+      body.onclick = e => { const t = e.target.closest('[data-i]'); if (t) show(+t.dataset.i); };
+      $('#ph-open', box).onclick = () => api('open_url', r.photos[cur].full);
+      show(0);
+    };
+    load();
+  });
+}
+
 // 工单详情里的配件部分
 // 添加配件：在 D365 物料主数据里搜物料号 / 名称，选中后填数量，直接新增到工单的服务配件里
 function addPartDialog(oid) {
@@ -734,15 +778,18 @@ function addPartDialog(oid) {
       rows = await safe(() => api('search_parts', kw)) || [];
       $('#ap-list', box).innerHTML = rows.length ? `<table class="grid compact"><thead><tr><th>物料号</th><th>名称</th><th></th></tr></thead><tbody>` +
         rows.map((r, i) => `<tr><td class="mono">${esc(r.no)}</td><td>${esc(r.name)}</td>
-          <td><button class="link" data-i="${i}">选择</button></td></tr>`).join('') + '</tbody></table>'
+          <td class="nowrap"><button class="link" data-ph="${i}">图片</button> <button class="link" data-i="${i}">选择</button></td></tr>`).join('') + '</tbody></table>'
         : '<div class="empty">没有找到，换个关键字试试</div>';
     };
     $('#ap-go', box).onclick = load;
     $('#ap-kw', box).onkeydown = e => { if (e.key === 'Enter') load(); };
     $('#ap-list', box).onclick = e => {
+      const ph = e.target.closest('[data-ph]');
+      if (ph) { const r = rows[+ph.dataset.ph]; partPhotosDialog(r.no, r.name); return; }
       const b = e.target.closest('[data-i]'); if (!b) return;
       picked = rows[+b.dataset.i];
-      $('#ap-name', box).textContent = `${picked.no} ${picked.name}`;
+      $('#ap-name', box).innerHTML = `${esc(picked.no)} ${esc(picked.name)} <button class="link" id="ap-ph">图片</button>`;
+      $('#ap-ph', box).onclick = () => partPhotosDialog(picked.no, picked.name);
       $('#ap-pick', box).hidden = false; $('#ap-ok', box).disabled = false;
       $('#ap-qty', box).focus(); $('#ap-qty', box).select();
     };
@@ -964,7 +1011,7 @@ async function loadOrderParts(oid, refresh) {
       <span class="muted small">工单已服务完工：把已消耗的借料配件核销（同 D365 工单上的「配件核销」）</span></div>` : ''}
     ${r.parts.length ? `<table class="grid compact parts-tb"><thead><tr><th>配件</th><th title="确认数量">确认</th><th>消耗</th><th>剩余</th><th>收费</th><th>金额</th><th>借料单</th></tr></thead><tbody>` +
       r.parts.map(p => { const lock = lockOf(p); return `<tr data-part="${esc(p.id)}">
-        <td><span class="mono small">${esc(p.part_no)}</span><div>${esc(p.name)}</div></td><td>${qty(p.confirm_qty)}</td>
+        <td><span class="mono small">${esc(p.part_no)}</span> <button class="link small" data-ph-no="${esc(p.part_no)}">图片</button><div>${esc(p.name)}</div></td><td>${qty(p.confirm_qty)}</td>
         <td class="nowrap">${lock ? `${qty(p.consumption_qty)} <span class="muted small" title="${esc(lock)}">🔒</span>`
           : `<input type="number" class="cq" min="0" max="${p.confirm_qty}" step="1" value="${qty(p.consumption_qty)}" data-old="${p.consumption_qty}">
              <button class="link" data-save-cq hidden>保存</button>`}</td>
@@ -1001,6 +1048,7 @@ async function loadOrderParts(oid, refresh) {
     btn.hidden = Number(e.target.value) === Number(e.target.dataset.old);
   };
   box.onclick = async e => {
+    if (e.target.dataset.phNo) { partPhotosDialog(e.target.dataset.phNo, $('td div', e.target.closest('tr')).textContent); return; }
     if (e.target.dataset.delPart) {
       const name = $('td div', e.target.closest('tr')).textContent;
       if (!await ask(`从 D365 删除这条还没申请的配件「${name}」？`, '删除')) return;

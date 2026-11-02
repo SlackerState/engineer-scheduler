@@ -159,6 +159,46 @@ class Browser:
             raise NeedLogin(f"{timeout // 60} 分钟内没有完成登录")
         return self._run(fn, timeout=timeout + 90)
 
+    def cookie(self, url: str, name: str) -> str:
+        """读这个浏览器里某个网站的 Cookie（如 SIS 的登录 token）。浏览器没开时读上次保存的登录状态文件。"""
+        host = urlparse(url).hostname or ""
+
+        def fn():
+            if self._ctx:
+                cookies = self._ctx.cookies(url)
+            else:
+                try:
+                    cookies = json.loads(self.state_file.read_text("utf-8")).get("cookies", [])
+                except Exception:
+                    cookies = []
+                cookies = [c for c in cookies if host == c.get("domain", "").lstrip(".")
+                           or host.endswith("." + c.get("domain", "").lstrip("."))]
+            return next((c["value"] for c in cookies if c.get("name") == name), "")
+        return self._run(fn, timeout=60)
+
+    def login_window(self, url: str, done, timeout: int = 300):
+        """弹出可见浏览器打开 url 让用户自己登录（如 SIS，有验证码）；done(ctx) 为真后保存登录状态并关窗。"""
+        def fn():
+            self._close()
+            ctx = self._ensure(headed=True)
+            try:
+                page = ctx.pages[0] if ctx.pages else ctx.new_page()
+                page.goto(url, wait_until="domcontentloaded", timeout=60000)
+                page.bring_to_front()
+                deadline = time.time() + timeout
+                while time.time() < deadline:
+                    if done(ctx):
+                        page.wait_for_timeout(1500)  # 让网页把登录后的状态写完
+                        self._close()
+                        return True
+                    page.wait_for_timeout(1500)
+            except Exception as e:
+                self._close()
+                raise NeedLogin(f"登录窗口被关闭或出错（{str(e).splitlines()[0]}）") from e
+            self._close()
+            raise NeedLogin(f"{timeout // 60} 分钟内没有完成登录")
+        return self._run(fn, timeout=timeout + 90)
+
     def _open_api_page(self, ctx, base: str):
         """先打开 D365 首页：会话过期时微软账号会自动单点登录续期；然后停在同源的 WhoAmI 上调 API。
 

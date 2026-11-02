@@ -12,6 +12,7 @@ from .browser import Browser, NeedLogin
 from .d365 import D365, normalize
 from .db import DB, ORDER_EDITABLE, ORDER_STATUSES, SLOTS, STATUSES, app_dir
 from .sync import D365_COLUMNS, Syncer
+from .sis import Sis
 from .udesk import SOURCE_CHANNELS, Udesk
 from .updater import Updater
 from .version import __version__
@@ -27,6 +28,7 @@ class Api:
         self._browser = Browser(app_dir(), self._db.settings)
         self._d365 = D365(self._browser, self._db.settings)
         self._udesk = Udesk(self._db.settings)
+        self._sis = Sis(self._browser, self._db.settings)
         self._sync = Syncer(self._db, self._d365)
         self._updater = Updater(self._db.settings)
         self._updater.cleanup_old()
@@ -248,6 +250,21 @@ class Api:
 
     def search_parts(self, keyword):
         return self._d365_call(self._d365.search_parts, keyword or "")
+
+    # ---------- SIS 配件图片 ----------
+    def part_photos(self, part_no):
+        """SIS 里的配件图片。SIS 没登录 / 过期时返回 need_login，界面提示去登录。"""
+        try:
+            return {"photos": self._sis.photos(part_no or "")}
+        except NeedLogin as e:
+            return {"need_login": True, "message": str(e)}
+
+    def sis_login(self):
+        """弹出浏览器窗口让用户登录 SIS（有验证码，需要本人操作），登录后窗口自动关闭。"""
+        try:
+            return self._sis.login()
+        except NeedLogin as e:
+            raise RuntimeError(str(e)) from e
 
     def add_order_part(self, oid, part, qty):
         """part = {id, no, name}（来自 search_parts）。"""

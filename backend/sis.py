@@ -1,0 +1,100 @@
+"""SIS（三一服务信息系统 sis-global.sanygroup.com）：按物料号查配件图片。
+
+接口同 SIS「配件查询 → 详情」里的图片：
+  POST /api-gateway/bom-server/materialLink/queryGmpsPhotoByMateriaCode  {"materiaCode": 物料号}
+  请求头 Authorization = 登录 token（网页登录后存在 Cookie「Admin-Token」里，JWT，12 小时有效），
+        Authorization-userId = token 里的 userId；不需要 Cookie
+  返回 data: [{filePath, fileThumbnailPath, ...}]，图片在 https://gmps-cos.sany.com.cn/<路径>，不用登录就能打开
+token 缺失或过期时返回 code 10001。SIS 登录有验证码，所以由用户在软件的浏览器窗口里自己登录。
+"""
+from __future__ import annotations
+
+import base64
+import json
+import time
+import urllib.error
+import urllib.request
+
+from .browser import NeedLogin
+
+SIS_URL = "https://sis-global.sanygroup.com"
+IMG_BASE = "https://gmps-cos.sany.com.cn/"
+TOKEN_COOKIE = "Admin-Token"
+
+
+def _claims(token: str) -> dict:
+    try:
+        part = token.split(".")[1]
+        return json.loads(base64.urlsafe_b64decode(part + "=" * (-len(part) % 4)))
+    except (IndexError, ValueError):
+        return {}
+
+
+class Sis:
+    def __init__(self, browser, get_settings):
+        self.browser = browser
+        self.get_settings = get_settings
+        self._cache: dict[str, list[dict]] = {}
+
+    @property
+    def base(self) -> str:
+        return (self.get_settings().get("sis_url") or SIS_URL).rstrip("/")
+
+    def _token(self) -> tuple[str, dict]:
+        """返回还有效的 token 和它的内容（userId、exp），没有或快过期了就要重新登录。"""
+        tok = self.browser.cookie(self.base, TOKEN_COOKIE)
+        c = _claims(tok) if tok else {}
+        if not c.get("userId") or c.get("exp", 0) < time.time() + 60:
+            raise NeedLogin("SIS 未登录或登录已过期")
+        return tok, c
+
+    def status(self) -> dict:
+        try:
+            _, c = self._token()
+            return {"logged_in": True, "expires": time.strftime("%Y-%m-%d %H:%M", time.localtime(c["exp"]))}
+        except NeedLogin:
+            return {"logged_in": False}
+
+    def login(self) -> dict:
+        # 旧 token 可能时间上没过期、但 SIS 已经不认了（如在别处重新登录），所以要等到出现新的 token
+        old = self.browser.cookie(self.base, TOKEN_COOKIE)
+
+        def done(ctx):
+            tok = next((x["value"] for x in ctx.cookies(self.base) if x["name"] == TOKEN_COOKIE), "")
+            c = _claims(tok) if tok and tok != old else {}
+            return bool(c.get("userId")) and c.get("exp", 0) > time.time() + 60
+        self.browser.login_window(self.base + "/login", done)
+        return self.status()
+
+    def _call(self, path: str, body: dict):
+        tok, c = self._token()
+        req = urllib.request.Request(
+            f"{self.base}/api-gateway{path}", data=json.dumps(body).encode(), method="POST",
+            headers={"Content-Type": "application/json;charset=UTF-8", "Accept": "application/json",
+                     "Authorization": tok, "Authorization-userId": str(c["userId"])})
+        try:
+            with urllib.request.urlopen(req, timeout=30) as r:
+                j = json.loads(r.read() or b"{}")
+        except urllib.error.HTTPError as e:
+            raise RuntimeError(f"SIS 返回错误 {e.code}") from e
+        except urllib.error.URLError as e:
+            raise RuntimeError(f"连不上 SIS（{e.reason}），请检查网络") from e
+        code = str(j.get("code"))
+        if code == "10001":
+            raise NeedLogin("SIS 登录已过期")
+        if code != "0":
+            raise RuntimeError(j.get("message") or "SIS 查询失败")
+        return j.get("data")
+
+    def photos(self, part_no: str) -> list[dict]:
+        """配件图片：[{thumb, full, name}]，没有图片返回空列表。同一物料号只查一次。"""
+        no = (part_no or "").strip()
+        if not no:
+            return []
+        if no not in self._cache:
+            rows = self._call("/bom-server/materialLink/queryGmpsPhotoByMateriaCode", {"materiaCode": no}) or []
+            rows.sort(key=lambda r: r.get("filePath") or "")
+            self._cache[no] = [{"thumb": IMG_BASE + (r.get("fileThumbnailPath") or r.get("filePath") or ""),
+                                "full": IMG_BASE + (r.get("filePath") or r.get("fileThumbnailPath") or ""),
+                                "name": (r.get("filePath") or "").rsplit("/", 1)[-1]} for r in rows]
+        return self._cache[no]

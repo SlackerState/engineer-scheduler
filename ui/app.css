@@ -233,3 +233,10 @@ td.st-blank { color: var(--muted); }
 .prog:first-child { border-top: none; padding-top: 0; }
 .prog-text { white-space: pre-wrap; word-break: break-word; line-height: 1.5; margin-top: 2px; }
 .check.warn-box { background: #fff4e0; color: var(--warn); }
+
+/* SIS 配件图片 */
+.ph-big { display: flex; justify-content: center; align-items: center; min-height: 240px; background: var(--hover); border-radius: 8px; }
+.ph-big img { max-width: 100%; max-height: 52vh; object-fit: contain; display: block; }
+.ph-thumbs { display: flex; gap: 8px; flex-wrap: wrap; }
+.ph-thumbs img { width: 72px; height: 72px; object-fit: cover; border: 2px solid var(--line); border-radius: 6px; cursor: pointer; background: var(--hover); }
+.ph-thumbs img.on { border-color: var(--accent); }
