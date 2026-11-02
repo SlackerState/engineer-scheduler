@@ -12,6 +12,7 @@ from .browser import Browser, NeedLogin
 from .d365 import D365, normalize
 from .db import DB, ORDER_EDITABLE, ORDER_STATUSES, SLOTS, STATUSES, app_dir
 from .sync import D365_COLUMNS, Syncer
+from .iwms import Iwms
 from .sis import Sis
 from .udesk import SOURCE_CHANNELS, Udesk
 from .updater import Updater
@@ -29,6 +30,7 @@ class Api:
         self._d365 = D365(self._browser, self._db.settings)
         self._udesk = Udesk(self._db.settings)
         self._sis = Sis(self._browser, self._db.settings)
+        self._iwms = Iwms(self._browser, self._db.settings, self._db.set_raw_setting)
         self._sync = Syncer(self._db, self._d365)
         self._updater = Updater(self._db.settings)
         self._updater.cleanup_old()
@@ -42,7 +44,7 @@ class Api:
     def bootstrap(self):
         noon = int(self._db.settings().get("noon_hour") or 12)
         return {
-            "settings": self._db.settings(), "engineers": self._db.engineers(),
+            "settings": self._public_settings(), "engineers": self._db.engineers(),
             "statuses": STATUSES, "order_statuses": ORDER_STATUSES, "slots": SLOTS,
             "today": date.today().isoformat(),
             "slot_now": "上午" if datetime.now().hour < noon else "下午",
@@ -86,7 +88,14 @@ class Api:
         return {"ok": True}
 
     def save_settings(self, data):
-        return self._db.save_settings(data)
+        self._db.save_settings(data)
+        return self._public_settings()
+
+    def _public_settings(self) -> dict:
+        """给界面的设置：去掉登录 token。"""
+        s = self._db.settings()
+        s.pop("iwms_token", None)
+        return s
 
     # ---------- 人员 ----------
     def list_engineers(self, include_inactive=False):
@@ -258,6 +267,20 @@ class Api:
             return {"photos": self._sis.photos(part_no or "")}
         except NeedLogin as e:
             return {"need_login": True, "message": str(e)}
+
+    def part_stock(self, part_no):
+        """iWMS 里这个配件在英国各仓（英格兰配件库优先）的库存和库位。没登录 / 过期时返回 need_login。"""
+        try:
+            return self._iwms.stock(part_no or "")
+        except NeedLogin as e:
+            return {"need_login": True, "message": str(e)}
+
+    def iwms_login(self):
+        """弹出浏览器窗口让用户登录 iWMS（三一统一登录），登录后窗口自动关闭。"""
+        try:
+            return self._iwms.login()
+        except NeedLogin as e:
+            raise RuntimeError(str(e)) from e
 
     def sis_login(self):
         """弹出浏览器窗口让用户登录 SIS（有验证码，需要本人操作），登录后窗口自动关闭。"""
