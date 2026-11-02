@@ -1263,7 +1263,11 @@ async function loadSettings() {
     if (!el.name || !(el.name in b.settings)) continue;
     if (el.type === 'checkbox') el.checked = !!b.settings[el.name]; else el.value = b.settings[el.name];
   }
+  renderSites();
   updateSyncState();
+  // iWMS、SIS 查得快，打开设置就看一下；D365 看同步状态，要确认点「检查」
+  checkSite('iwms');
+  checkSite('sis');
 }
 
 async function saveSettings(e) {
@@ -1280,13 +1284,65 @@ function setLogin(ok, msg) {
   const p = $('#login-state');
   p.className = 'pill ' + (ok === true ? 'ok' : ok === false ? 'bad' : '');
   p.textContent = ok === true ? 'D365：已登录' : ok === false ? 'D365：未登录' : 'D365：未检查';
-  if (msg !== undefined) $('#login-msg').textContent = msg;
+  setSite('d365', ok, msg);
 }
 
-async function checkLogin() {
-  $('#login-msg').textContent = '检查中…';
-  const r = await safe(() => api('check_login'));
-  if (r) setLogin(r.ok, r.ok ? '已登录，可以同步。' : r.message);
+// 设置页「系统登录」：各系统都由本人在软件的浏览器窗口里登录
+const SITES = [
+  {key: 'd365', name: 'D365', use: '同步工单、派工、配件和借料', hint: '公司账号 + MFA；没登录时点「同步 D365」也会弹出登录窗口'},
+  {key: 'iwms', name: 'iWMS', use: '查英国各仓的配件库存和库位', hint: '三一统一登录，约 24 小时有效；登录后自动切到「海外iWMS查询」角色'},
+  {key: 'sis', name: 'SIS', use: '查配件图片', hint: '账号 + 验证码，12 小时有效'},
+];
+
+function renderSites() {
+  if ($('#sites').childElementCount) return;
+  $('#sites').innerHTML = SITES.map(s => `<div class="site" data-site="${s.key}">
+    <div class="row"><b>${s.name}</b><span class="muted small">${esc(s.use)}</span>
+      <span class="pill" data-st style="margin-left:auto">未检查</span></div>
+    <div class="row"><span class="muted small" data-msg>${esc(s.hint)}</span>
+      <button data-check style="margin-left:auto">检查</button><button class="primary" data-login>登录 ${s.name}</button></div>
+  </div>`).join('');
+  $('#sites').onclick = e => {
+    const el = e.target.closest('[data-site]'); if (!el) return;
+    if (e.target.closest('[data-check]')) checkSite(el.dataset.site);
+    if (e.target.closest('[data-login]')) loginSite(el.dataset.site);
+  };
+}
+
+// ok：true 已登录 / false 未登录 / null 没查到（网络等）/ undefined 未检查
+function setSite(key, ok, msg) {
+  const el = $(`#sites [data-site="${key}"]`); if (!el) return;
+  const st = $('[data-st]', el);
+  st.className = 'pill ' + (ok === true ? 'ok' : ok === false ? 'bad' : '');
+  st.textContent = ok === true ? '已登录' : ok === false ? '未登录' : ok === null ? '没查到' : '未检查';
+  if (msg !== undefined) $('[data-msg]', el).textContent = msg;
+}
+
+async function checkSite(key) {
+  const el = $(`#sites [data-site="${key}"]`);
+  $('[data-msg]', el).textContent = '检查中…';
+  const r = await safe(() => api('site_status', key));
+  if (!r) { $('[data-msg]', el).textContent = ''; return; }
+  if (key === 'd365') setLogin(r.ok, r.message); else setSite(key, r.ok, r.message);
+}
+
+async function loginSite(key) {
+  const el = $(`#sites [data-site="${key}"]`), b = $('[data-login]', el);
+  if (key === 'd365') {
+    // D365 登录走同步流程：登录成功后自动关窗并同步一次
+    if (!await safe(() => api('login_d365'))) { toast('正在同步或登录中，请稍候'); return; }
+    $('[data-msg]', el).textContent = '已弹出登录窗口，登录成功后会自动关闭并开始同步。';
+    S.wasRunning = true;
+    updateSyncState();
+    return;
+  }
+  const label = b.textContent;
+  b.disabled = true; b.textContent = '请在弹出的窗口里登录…';
+  $('[data-msg]', el).textContent = '已弹出登录窗口，登录成功后会自动关闭。';
+  const r = await safe(() => api(`${key}_login`));
+  b.disabled = false; b.textContent = label;
+  if (r && r.logged_in) toast(`${SITES.find(s => s.key === key).name} 已登录`);
+  checkSite(key);
 }
 
 // ======================= 同步 =======================
@@ -1475,13 +1531,6 @@ async function init() {
 
   // 设置
   $('#set-form').onsubmit = saveSettings;
-  $('#b-login').onclick = () => safe(async () => {
-    if (!await api('login_d365')) { toast('正在同步或登录中，请稍候'); return; }
-    $('#login-msg').textContent = '已弹出登录窗口，登录成功后会自动关闭并开始同步。';
-    S.wasRunning = true;
-    updateSyncState();
-  });
-  $('#b-login-check').onclick = checkLogin;
   $('#x-file').onchange = e => {
     const file = e.target.files[0]; if (!file) return;
     const rd = new FileReader();

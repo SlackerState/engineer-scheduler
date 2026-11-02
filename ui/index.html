@@ -154,14 +154,11 @@
 <section id="v-settings" class="view">
   <header class="bar"><h1>设置</h1></header>
   <div class="cards">
-    <div class="card form" id="set-d365">
-      <h2>D365 登录</h2>
-      <p class="muted">点「登录 D365」会弹出浏览器窗口，用公司账号登录（含 MFA）。登录成功后窗口会自动关闭并开始同步，之后软件在后台复用这个登录状态。平时直接点「同步 D365」也行：没登录时会自动弹出登录窗口。</p>
-      <div class="row">
-        <button id="b-login" class="primary">登录 D365</button>
-        <button id="b-login-check">检查登录</button>
-      </div>
-      <div id="login-msg" class="muted small"></div>
+    <div class="card form" id="set-login">
+      <h2>系统登录</h2>
+      <p class="muted">点「登录」会弹出浏览器窗口，请在窗口里自己登录（账号密码、MFA、验证码都由你输入），登录成功后窗口自动关闭，之后软件在后台复用这个登录状态。三个系统共用软件自己的浏览器，和你平时用的浏览器互不影响。</p>
+      <div id="sites"></div>
+      <p class="muted small">Udesk 建单走三一中间件接口，不需要登录（只要在下面填好坐席 ID）。</p>
     </div>
     <form class="card form" id="set-form">
       <h2>同步设置</h2>

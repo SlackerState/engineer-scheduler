@@ -438,6 +438,24 @@ class Api:
         """弹出登录窗口，登录成功后自动关窗并同步一次。"""
         return self._sync.start(login_first=True)
 
+    def site_status(self, site):
+        """设置页「系统登录」：各系统是否已登录。d365 / iwms 会实际请求一次接口，sis 看 token 有效期。"""
+        if site == "d365":
+            r = self.check_login()
+            return {"ok": r["ok"], "message": "已登录" if r["ok"] else r.get("message", "")}
+        try:
+            if site == "sis":
+                s = self._sis.status()
+                return {"ok": s["logged_in"], "message": f"已登录，{s['expires']} 前有效" if s["logged_in"]
+                        else "未登录或登录已过期（SIS 登录 12 小时有效）"}
+            if site == "iwms":
+                s = self._iwms.status()
+                return {"ok": s["logged_in"], "message": "已登录" if s["logged_in"]
+                        else "未登录或登录已过期（约 24 小时有效）"}
+        except Exception as e:  # noqa: BLE001 - 网络问题等，显示给用户
+            return {"ok": None, "message": str(e).splitlines()[0][:200]}
+        raise ValueError(f"未知系统：{site}")
+
     def check_login(self):
         try:
             me = self._d365.whoami()

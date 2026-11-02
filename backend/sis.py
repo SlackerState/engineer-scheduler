@@ -49,8 +49,10 @@ class Sis:
         return tok, c
 
     def status(self) -> dict:
+        """实际请求一次 SIS（查一个不存在的物料号），token 时间上没过期但 SIS 已经不认时也能发现。"""
         try:
             _, c = self._token()
+            self._call("/bom-server/materialLink/queryGmpsPhotoByMateriaCode", {"materiaCode": "-"})
             return {"logged_in": True, "expires": time.strftime("%Y-%m-%d %H:%M", time.localtime(c["exp"]))}
         except NeedLogin:
             return {"logged_in": False}
