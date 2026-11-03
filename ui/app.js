@@ -834,27 +834,49 @@ function viewPhotos(photos, index, no) {
 }
 
 // 工单详情里的配件部分
-// 添加配件：在 D365 物料主数据里搜物料号 / 名称，选中后填数量，直接新增到工单的服务配件里
+// 添加配件：在 D365 物料主数据里搜物料号 / 名称，点「加入」放进待添加清单（可以换关键字多次搜），
+// 填好数量后一次性新增到工单的服务配件里
 function addPartDialog(oid) {
   modal(`<h2>添加配件</h2>
-    <p class="muted small" style="margin:0">从 D365 物料主数据里查找。物料号按开头匹配（如 A8201），名称按包含匹配（英文，如 Filter）。添加后配件是「待申请」，再点「申请借料」生成借料单。</p>
+    <p class="muted small" style="margin:0">从 D365 物料主数据里查找。物料号按开头匹配（如 A8201），名称按包含匹配（英文，如 Filter）。可以换关键字多次搜索，把要的配件都加入下面的清单，再一起添加。添加后配件是「待申请」，再点「申请借料」生成借料单。</p>
     <div class="row"><input id="ap-kw" placeholder="物料号或名称，至少 2 个字符" style="flex:1"><button id="ap-go">搜索</button></div>
-    <div id="ap-list" class="table-wrap" style="max-height:46vh;min-height:80px"><div class="empty">输入物料号或名称后搜索</div></div>
-    <div class="row" id="ap-pick" hidden><span>已选：<b id="ap-name"></b></span>
-      <label style="margin-left:auto">数量 <input id="ap-qty" type="number" min="1" step="1" value="1" style="width:80px"></label></div>
-    <div class="row" id="ap-stock"></div>
+    <div id="ap-list" class="table-wrap" style="max-height:34vh;min-height:80px"><div class="empty">输入物料号或名称后搜索</div></div>
+    <div class="sec small">待添加 <span class="muted" id="ap-n">· 还没选</span></div>
+    <div id="ap-cart"></div>
     <div class="actions"><button data-close>取消</button><button class="primary" id="ap-ok" disabled>添加到 D365 工单</button></div>`, (box, close) => {
-    let picked = null, rows = [];
+    let rows = [];
+    const cart = [];  // [{part: {id, no, name}, qty}]
+    const inCart = id => cart.findIndex(c => c.part.id === id);
     $('[data-close]', box).onclick = close;
+    const renderRows = () => {
+      $('#ap-list', box).innerHTML = rows.length ? `<table class="grid compact"><thead><tr><th>物料号</th><th>名称</th><th></th></tr></thead><tbody>` +
+        rows.map((r, i) => `<tr><td class="mono">${esc(r.no)}</td><td>${esc(r.name)}</td>
+          <td class="nowrap"><button class="link" data-ph="${i}">库存/图片</button> ${inCart(r.id) >= 0
+            ? '<span class="muted small">已加入</span>' : `<button class="link" data-i="${i}">加入</button>`}</td></tr>`).join('') + '</tbody></table>'
+        : '<div class="empty">没有找到，换个关键字试试</div>';
+    };
+    const renderCart = () => {
+      $('#ap-n', box).textContent = cart.length ? `· ${cart.length} 个` : '· 还没选';
+      $('#ap-ok', box).disabled = !cart.length;
+      $('#ap-ok', box).textContent = cart.length > 1 ? `添加 ${cart.length} 个配件到 D365 工单` : '添加到 D365 工单';
+      const el = $('#ap-cart', box);
+      if (!cart.length) { el.innerHTML = '<div class="empty">在上面的搜索结果里点「加入」</div>'; return; }
+      el.innerHTML = `<table class="grid compact"><thead><tr><th>物料号</th><th>名称 / 英格兰配件库</th><th>数量</th><th></th></tr></thead><tbody>` +
+        cart.map((c, i) => `<tr><td class="mono">${esc(c.part.no)}</td>
+          <td>${esc(c.part.name)} <button class="link" data-cph="${i}">库存/图片</button><div data-stock="${i}"></div></td>
+          <td><input type="number" min="1" step="1" value="${c.qty}" data-q="${i}" style="width:70px"></td>
+          <td><button class="link" data-rm="${i}" title="从清单移除">移除</button></td></tr>`).join('') + '</tbody></table>';
+      cart.forEach((c, i) => {  // 每个配件只查一次库存，清单变动时用查过的结果
+        const s = $(`[data-stock="${i}"]`, el);
+        if (c.stock) s.innerHTML = c.stock; else stockSummary(s, c.part.no).then(() => { if (s.isConnected) c.stock = s.innerHTML; });
+      });
+    };
     const load = async () => {
       const kw = $('#ap-kw', box).value.trim();
       if (kw.length < 2) { toast('至少输入 2 个字符', true); return; }
       $('#ap-list', box).innerHTML = '<div class="empty">正在查 D365…</div>';
       rows = await safe(() => api('search_parts', kw)) || [];
-      $('#ap-list', box).innerHTML = rows.length ? `<table class="grid compact"><thead><tr><th>物料号</th><th>名称</th><th></th></tr></thead><tbody>` +
-        rows.map((r, i) => `<tr><td class="mono">${esc(r.no)}</td><td>${esc(r.name)}</td>
-          <td class="nowrap"><button class="link" data-ph="${i}">库存/图片</button> <button class="link" data-i="${i}">选择</button></td></tr>`).join('') + '</tbody></table>'
-        : '<div class="empty">没有找到，换个关键字试试</div>';
+      renderRows();
     };
     $('#ap-go', box).onclick = load;
     $('#ap-kw', box).onkeydown = e => { if (e.key === 'Enter') load(); };
@@ -862,23 +884,42 @@ function addPartDialog(oid) {
       const ph = e.target.closest('[data-ph]');
       if (ph) { const r = rows[+ph.dataset.ph]; partInfoDialog(r.no, r.name); return; }
       const b = e.target.closest('[data-i]'); if (!b) return;
-      picked = rows[+b.dataset.i];
-      $('#ap-name', box).innerHTML = `${esc(picked.no)} ${esc(picked.name)} <button class="link" id="ap-ph">库存/图片</button>`;
-      $('#ap-ph', box).onclick = () => partInfoDialog(picked.no, picked.name);
-      stockSummary($('#ap-stock', box), picked.no);
-      $('#ap-pick', box).hidden = false; $('#ap-ok', box).disabled = false;
-      $('#ap-qty', box).focus(); $('#ap-qty', box).select();
+      const r = rows[+b.dataset.i];
+      if (inCart(r.id) < 0) cart.push({part: r, qty: 1});
+      renderRows(); renderCart();
+      const q = $(`[data-q="${inCart(r.id)}"]`, box); q.focus(); q.select();
     };
+    $('#ap-cart', box).oninput = e => { const q = e.target.dataset.q; if (q != null) cart[+q].qty = Number(e.target.value); };
+    $('#ap-cart', box).onclick = e => {
+      const ph = e.target.closest('[data-cph]');
+      if (ph) { const c = cart[+ph.dataset.cph]; partInfoDialog(c.part.no, c.part.name); return; }
+      const rm = e.target.closest('[data-rm]'); if (!rm) return;
+      cart.splice(+rm.dataset.rm, 1);
+      renderRows(); renderCart();
+    };
+    // 数量框里按回车回到搜索框，方便接着搜下一个
+    $('#ap-cart', box).onkeydown = e => { if (e.key === 'Enter' && e.target.dataset.q != null) { $('#ap-kw', box).focus(); $('#ap-kw', box).select(); } };
     $('#ap-ok', box).onclick = async () => {
-      const q = Number($('#ap-qty', box).value);
-      if (!(q > 0)) { toast('数量要大于 0', true); return; }
-      $('#ap-ok', box).disabled = true;
-      const res = await safe(() => api('add_order_part', oid, picked, q));
-      $('#ap-ok', box).disabled = false;
-      if (!res) return;
-      close(); toast(`已添加到 D365：${picked.no} ${picked.name} × ${q}`);
-      loadOrderParts(oid);
+      const bad = cart.find(c => !(c.qty > 0));
+      if (bad) { toast(`${bad.part.no} 的数量要大于 0`, true); return; }
+      $('#ap-ok', box).disabled = true; $('#ap-ok', box).textContent = '正在添加…';
+      const res = await safe(() => api('add_order_parts', oid, cart.map(c => ({part: c.part, qty: c.qty}))));
+      if (!res) { renderCart(); return; }
+      if (res.added.length) loadOrderParts(oid);
+      if (!res.failed.length) {
+        close();
+        toast(res.added.length === 1 ? `已添加到 D365：${res.added[0].no} ${res.added[0].name} × ${res.added[0].qty}`
+          : `已添加 ${res.added.length} 个配件到 D365：${res.added.map(a => `${a.no} × ${a.qty}`).join('、')}`);
+        return;
+      }
+      // 部分失败：加上的从清单去掉，失败的留着可以重试
+      const ok = new Set(res.added.map(a => a.id));
+      cart.splice(0, cart.length, ...cart.filter(c => !ok.has(c.part.id)));
+      renderRows(); renderCart();
+      toast(`${res.added.length ? `已添加 ${res.added.length} 个；` : ''}${res.failed.length} 个没加上：` +
+        res.failed.map(f => `${f.no}（${f.error}）`).join('；'), true);
     };
+    renderCart();
     $('#ap-kw', box).focus();
   }, {sticky: true});
 }

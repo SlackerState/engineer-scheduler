@@ -292,12 +292,14 @@ class Api:
         except NeedLogin as e:
             raise RuntimeError(str(e)) from e
 
-    def add_order_part(self, oid, part, qty):
-        """part = {id, no, name}（来自 search_parts）。"""
+    def add_order_parts(self, oid, items):
+        """一次加多个配件：items = [{part: {id, no, name}（来自 search_parts）, qty}]。"""
         o = self._d365_order(oid)
-        r = self._d365_call(self._d365.add_part, o["d365_id"], part, float(qty))
-        self._sync.sync_parts([o["d365_id"]])
-        return {**self.order_parts(oid), "added": {**r, "name": part.get("name"), "no": part.get("no")}}
+        r = self._d365_call(self._d365.add_parts, o["d365_id"],
+                            [{"part": it["part"], "qty": float(it.get("qty") or 0)} for it in items or []])
+        if r["added"]:
+            self._sync.sync_parts([o["d365_id"]])
+        return {**self.order_parts(oid), **r}
 
     def delete_order_part(self, oid, part_id):
         o = self._d365_order(oid)

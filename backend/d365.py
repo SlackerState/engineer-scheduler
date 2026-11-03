@@ -10,7 +10,7 @@ import json
 from datetime import datetime, timezone
 from urllib.parse import quote
 
-from .browser import Browser
+from .browser import Browser, NeedLogin
 
 FV = "@OData.Community.Display.V1.FormattedValue"
 ENTITY_SET = "mcs_serviceorders"
@@ -143,21 +143,34 @@ class D365:
                "mcs_faultconfirmationtime")
         return self.browser.fetch_json(self.base, self._api(f"{ENTITY_SET}({rid})?$select={sel}"))
 
-    def add_part(self, rid: str, part: dict, qty: float) -> dict:
-        """给工单新增一条服务配件（同 D365 快速创建表单：配件、数量、所属工单），
-        行号、确认数量、价格等由 D365 插件生成。"""
-        if not qty or qty <= 0:
-            raise RuntimeError("数量要大于 0")
+    def add_parts(self, rid: str, items: list[dict]) -> dict:
+        """给工单新增服务配件（同 D365 快速创建表单：配件、数量、所属工单），items = [{part: {id, no, name}, qty}]。
+        行号、确认数量、价格等由 D365 插件生成。逐条新增，某条失败不影响其它条，返回 {added, failed}。"""
+        if not items:
+            raise RuntimeError("还没选配件")
+        for it in items:
+            if not it.get("qty") or it["qty"] <= 0:
+                raise RuntimeError(f"{it['part'].get('no')} 的数量要大于 0")
         o = self._order_live(rid)
         if o.get("mcs_orderstatus") in FINAL_CODES:
             raise RuntimeError(f"工单 {o.get('mcs_ordernumber')} 当前状态为「{o.get('mcs_orderstatus' + FV)}」，不能再加配件")
-        body = {"mcs_serviceorder@odata.bind": f"/{ENTITY_SET}({rid})", "mcs_part@odata.bind": f"/mcs_parts({part['id']})",
-                "mcs_quantity": qty, "mcs_dealerstock": False}
-        if part.get("name"):
-            body["mcs_partfullname"] = part["name"]
-        r = self.browser.fetch_json(self.base, self._api("mcs_serviceparts?$select=mcs_servicepartid,mcs_name"),
-                                    method="POST", body=body, headers={"Prefer": "return=representation"})
-        return {"id": r.get("mcs_servicepartid"), "line": r.get("mcs_name") or ""}
+        added, failed = [], []
+        for it in items:
+            part = it["part"]
+            body = {"mcs_serviceorder@odata.bind": f"/{ENTITY_SET}({rid})", "mcs_part@odata.bind": f"/mcs_parts({part['id']})",
+                    "mcs_quantity": it["qty"], "mcs_dealerstock": False}
+            if part.get("name"):
+                body["mcs_partfullname"] = part["name"]
+            try:
+                r = self.browser.fetch_json(self.base, self._api("mcs_serviceparts?$select=mcs_servicepartid,mcs_name"),
+                                            method="POST", body=body, headers={"Prefer": "return=representation"})
+            except NeedLogin:
+                raise
+            except Exception as e:  # noqa: BLE001 - 记下来，接着加其它的
+                failed.append({**part, "qty": it["qty"], "error": str(e)})
+                continue
+            added.append({**part, "qty": it["qty"], "line": r.get("mcs_name") or ""})
+        return {"added": added, "failed": failed}
 
     def delete_part(self, part_id: str) -> str:
         """删掉还没申请（不在借料单上）、没核销、没消耗的服务配件。"""
