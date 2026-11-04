@@ -136,6 +136,19 @@ class D365:
         return [{"id": r["mcs_partid"], "no": r.get("mcs_name") or "", "name": r.get("mcs_partname") or ""}
                 for r in rows if not r.get("mcs_deleteflag")]
 
+    def part_names(self, nos: list[str]) -> dict[str, str]:
+        """批量按完整物料号查名称（批量查库存/图片用）：{物料号（大写）: 名称}，D365 里没有的不返回。"""
+        out: dict[str, str] = {}
+        nos = list(dict.fromkeys(n.strip() for n in nos if n and n.strip()))
+        for i in range(0, len(nos), 25):  # 一次查 25 个，免得网址太长
+            flt = " or ".join(f"mcs_name eq '{_q(n)}'" for n in nos[i:i + 25])
+            rows = self.browser.fetch_json(self.base, self._api(
+                f"mcs_parts?$select=mcs_name,mcs_partname,mcs_deleteflag&$filter={quote(f'({flt}) and statecode eq 0')}")).get("value", [])
+            for r in rows:
+                if not r.get("mcs_deleteflag") and r.get("mcs_name"):
+                    out[r["mcs_name"].upper()] = r.get("mcs_partname") or ""
+        return out
+
     def _order_live(self, rid: str) -> dict:
         sel = ("mcs_ordernumber,mcs_orderstatus,mcs_ordertype,mcs_existfault,mcs_serviceordermode,mcs_offlineoperation,"
                "_mcs_dealerid_value,mcs_fullmaintenance,_mcs_fullmaintenancecontractid_value,_mcs_country_value,"

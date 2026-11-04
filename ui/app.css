@@ -278,3 +278,4 @@ td.st-blank { color: var(--muted); }
 .lookup:not([hidden]) { display: grid; gap: 12px; max-width: 900px; }
 .lookup tr[data-no] { cursor: pointer; }
 .lookup tr.sel td { background: var(--hover); }
+.lookup .lk-thumb { width: 40px; height: 40px; object-fit: cover; border-radius: 4px; border: 1px solid var(--line); vertical-align: middle; background: var(--hover); }

@@ -263,6 +263,13 @@ class Api:
     def search_parts(self, keyword):
         return self._d365_call(self._d365.search_parts, keyword or "")
 
+    def part_names(self, nos):
+        """批量查库存/图片时补上配件名称；D365 没登录或出错时返回空，不影响查库存和图片。"""
+        try:
+            return self._d365.part_names(list(nos or [])[:100])
+        except Exception:  # noqa: BLE001 - 名称只是补充信息
+            return {}
+
     # ---------- SIS 配件图片 ----------
     def part_photos(self, part_no):
         """SIS 里的配件图片。SIS 没登录 / 过期时返回 need_login，界面提示去登录。"""

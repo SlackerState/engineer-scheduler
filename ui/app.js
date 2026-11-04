@@ -833,11 +833,23 @@ function partInfoDialog(no, name) {
 }
 
 // 配件 → 查库存/图片：输入物料号或英文名称，先在 D365 物料主数据里找；输入的正好是完整物料号时直接显示。
-// D365 没登录或没找到时，按输入的物料号直接查 iWMS 和 SIS（这两个系统不需要 D365）
+// D365 没登录或没找到时，按输入的物料号直接查 iWMS 和 SIS（这两个系统不需要 D365）。
+// 输入多个物料号（空格、逗号或换行隔开）时批量查，见 lookupBatch
+function showPartInfo(no, name) {
+  $$('#lk-list tr[data-no]').forEach(tr => tr.classList.toggle('sel', tr.dataset.no === no));
+  const info = $('#lk-info');
+  info.innerHTML = `<div class="row"><h2 style="margin:0">配件 <span class="mono">${esc(no)}</span></h2><span class="muted">${esc(name || '')}</span></div>
+    <div data-pi class="pi"></div>`;
+  partInfo($('[data-pi]', info), no);
+}
+
 async function lookupPart() {
   const kw = $('#lk-kw').value.trim();
   if (kw.length < 2) { toast('至少输入 2 个字符', true); return; }
   S.lookupKw = kw;
+  // 好几个、每个都带数字的就当作物料号清单（英文名称里一般没有数字，如 Fuel Filter）
+  const nos = [...new Set(kw.split(/[\s,，;；、]+/).filter(Boolean).map(x => x.toUpperCase()))];
+  if (nos.length > 1 && nos.every(x => /\d/.test(x))) return lookupBatch(nos);
   const list = $('#lk-list'), info = $('#lk-info');
   list.innerHTML = '<div class="empty">正在查 D365 物料…</div>'; info.innerHTML = '';
   let rows = null, err = '';
@@ -845,12 +857,7 @@ async function lookupPart() {
   if (S.lookupKw !== kw) return;  // 已经在查别的了
   const looksLikeNo = /\d/.test(kw) && !/\s/.test(kw);
   const exact = (rows || []).find(r => r.no.toUpperCase() === kw.toUpperCase());
-  const pick = (no, name) => {
-    $$('#lk-list tr[data-no]').forEach(tr => tr.classList.toggle('sel', tr.dataset.no === no));
-    info.innerHTML = `<div class="row"><h2 style="margin:0">配件 <span class="mono">${esc(no)}</span></h2><span class="muted">${esc(name || '')}</span></div>
-      <div data-pi class="pi"></div>`;
-    partInfo($('[data-pi]', info), no);
-  };
+  const pick = showPartInfo;
   list.innerHTML = rows && rows.length
     ? `<div class="table-wrap" style="max-height:30vh"><table class="grid compact"><thead><tr><th>物料号</th><th>名称</th><th></th></tr></thead><tbody>` +
       rows.map(r => `<tr data-no="${esc(r.no)}" data-name="${esc(r.name)}"><td class="mono">${esc(r.no)}</td><td>${esc(r.name)}</td>
@@ -860,6 +867,88 @@ async function lookupPart() {
   if (exact) pick(exact.no, exact.name);
   else if (rows && rows.length === 1) pick(rows[0].no, rows[0].name);
   else if (looksLikeNo && !(rows && rows.length)) pick(kw.toUpperCase(), '');
+}
+
+// 批量查：每个物料号一行，英格兰配件库可用数量和库位、其它仓可用数量、图片；查到一个填一行。
+// 同时只查 3 个（不占满到本地服务的连接）。iWMS / SIS 没登录时停下这一项，表格上方给登录按钮，登录后重查
+const BATCH_MAX = 50;
+async function lookupBatch(nos) {
+  const list = $('#lk-list'), info = $('#lk-info'), key = S.lookupKw;
+  info.innerHTML = '';
+  if (nos.length > BATCH_MAX) { list.innerHTML = `<div class="check bad">一次最多查 ${BATCH_MAX} 个物料号，这次有 ${nos.length} 个，请分几次查</div>`; return; }
+  const rows = nos.map(no => ({no, name: '', stock: null, photos: null}));  // stock / photos：null 在查，'login' 未登录，'err' 没查到
+  list.innerHTML = `<div class="row"><span class="muted small" id="lk-prog"></span>
+      <button id="lk-copy" style="margin-left:auto" disabled>复制结果</button></div>
+    <div id="lk-login-iwms"></div><div id="lk-login-sis"></div>
+    <div class="table-wrap" style="max-height:52vh"><table class="grid compact"><thead><tr><th>物料号</th><th>名称</th>
+      <th>英格兰配件库可用</th><th>库位</th><th>其它仓可用</th><th>图片</th></tr></thead>
+      <tbody>${nos.map((no, i) => `<tr data-no="${esc(no)}" data-k="${i}"></tr>`).join('')}</tbody></table></div>`;
+  const main = r => r.stock.warehouses.find(w => w.main);
+  const bins = w => w ? w.locations.filter(l => l.store && !l.locked).map(l => `${l.location}×${qty(l.qty)}`) : [];
+  const others = r => r.stock.warehouses.filter(w => !w.main && w.available > 0).map(w => `${w.name} ${qty(w.available)}`);
+  const wait = v => v === null ? '<span class="muted">…</span>' : v === 'login' ? '<span class="muted">未登录</span>' : '<span class="muted">没查到</span>';
+  const draw = i => {
+    const r = rows[i], tr = $(`#lk-list tr[data-k="${i}"]`);
+    if (!tr) return;
+    const ok = r.stock && typeof r.stock === 'object', w = ok && main(r);
+    const ph = Array.isArray(r.photos) ? (r.photos.length
+      ? `<img class="lk-thumb" src="${esc(r.photos[0].thumb)}" alt="">${r.photos.length > 1 ? ` <span class="muted small">共 ${r.photos.length}</span>` : ''}`
+      : '<span class="muted">无</span>') : wait(r.photos);
+    tr.innerHTML = `<td class="mono">${esc(r.no)}</td><td>${esc(r.name)}</td>
+      <td>${ok ? (w && w.available > 0 ? `<b class="good">${qty(w.available)}</b> ${esc(w.unit)}` : '<b class="warn">0</b>') : wait(r.stock)}</td>
+      <td class="mono small">${ok ? esc(bins(w).join('、')) || '—' : ''}</td>
+      <td class="small">${ok ? esc(others(r).join('、')) || '—' : ''}</td><td>${ph}</td>`;
+  };
+  rows.forEach((_, i) => draw(i));
+  list.onclick = e => {
+    if (e.target.closest('#lk-copy')) return copyBatch();
+    const tr = e.target.closest('tr[data-no]'); if (tr) showPartInfo(tr.dataset.no, rows[+tr.dataset.k].name);
+  };
+  const copyBatch = async () => {
+    const line = r => {
+      const ok = r.stock && typeof r.stock === 'object', w = ok && main(r);
+      return [r.no, r.name, ok ? qty(w ? w.available : 0) : '', ok ? bins(w).join(' ') : '', ok ? others(r).join('; ') : '',
+        Array.isArray(r.photos) ? r.photos.length : ''].join('\t');
+    };
+    const ta = document.createElement('textarea');
+    ta.style.cssText = 'position:fixed;left:-9999px;top:0';
+    ta.value = ['物料号\t名称\t英格兰配件库可用\t库位\t其它仓可用\t图片数', ...rows.map(line)].join('\n');
+    document.body.appendChild(ta);
+    const ok = await copyText(ta);
+    ta.remove();
+    toast(ok ? `已复制 ${rows.length} 个配件的结果，可以粘贴到邮件或 Excel` : '复制失败，请手动选中表格复制', !ok);
+  };
+  api('part_names', nos).then(m => {
+    if (S.lookupKw !== key) return;
+    rows.forEach((r, i) => { if (m[r.no]) { r.name = m[r.no]; draw(i); } });
+  }).catch(() => {});
+  // 逐个查库存和图片
+  const login = {stock: false, photos: false};
+  const jobs = rows.flatMap((r, i) => [[i, 'stock'], [i, 'photos']]);
+  const total = jobs.length;
+  let done = 0;
+  const prog = () => { const el = $('#lk-prog'); if (el) el.textContent = done < total ? `正在查 ${nos.length} 个配件… ${Math.round(done * 100 / total)}%` : `共 ${nos.length} 个配件，点一行看详细库存和图片`; };
+  prog();
+  const worker = async () => {
+    while (jobs.length && S.lookupKw === key) {
+      const [i, kind] = jobs.shift(), r = rows[i];
+      if (login[kind]) r[kind] = 'login';
+      else {
+        const res = await api(kind === 'stock' ? 'part_stock' : 'part_photos', r.no).catch(() => null);
+        if (res && res.need_login) { login[kind] = true; r[kind] = 'login'; }
+        else r[kind] = !res ? 'err' : kind === 'stock' ? res : res.photos;
+      }
+      if (S.lookupKw !== key) return;
+      done++; draw(i); prog();
+    }
+  };
+  await Promise.all([worker(), worker(), worker()]);
+  if (S.lookupKw !== key) return;
+  done = total; prog();
+  $('#lk-copy').disabled = false;
+  const again = () => { if (S.lookupKw === key) lookupBatch(nos); };
+  if (login.stock) loginPrompt($('#lk-login-iwms'), 'iWMS', 'iwms_login', '三一统一登录，约 24 小时有效', again);
+  if (login.photos) loginPrompt($('#lk-login-sis'), 'SIS', 'sis_login', 'SIS 登录 12 小时有效', again);
 }
 
 // 全屏看原图（Viewer.js）：滚轮缩放、拖动、旋转，左右键切换，Esc 关闭
