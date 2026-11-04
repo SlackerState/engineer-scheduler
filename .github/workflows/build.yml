@@ -259,3 +259,28 @@ jobs:
         with:
           files: out/*.zip
           generate_release_notes: true
+
+      # 上一步偶尔会有安装包没传上（GitHub 报错，但步骤仍显示成功，v1.18.0 的 Mac 包就是这样）：
+      # 逐个核对名称和大小，缺的重传，最多 3 次，仍不全就让发布失败
+      - name: 核对安装包都已上传
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          missing() {
+            for f in out/*.zip; do
+              n=$(basename "$f")
+              got=$(gh release view "$TAG" -R "$GITHUB_REPOSITORY" --json assets \
+                -q ".assets[] | select(.name == \"$n\" and .state == \"uploaded\") | .size")
+              [ "$got" = "$(stat -c %s "$f")" ] || echo "$f"
+            done
+          }
+          for i in 1 2 3; do
+            m=$(missing)
+            if [ -z "$m" ]; then echo "安装包都已上传：$(ls out/*.zip | xargs -n1 basename | tr '\n' ' ')"; exit 0; fi
+            echo "第 $i 次重传：$m"
+            gh release upload "$TAG" $m --clobber -R "$GITHUB_REPOSITORY" || true
+            sleep 5
+          done
+          m=$(missing)
+          [ -z "$m" ] || { echo "::error::这些安装包没能上传到发布：$m"; exit 1; }
