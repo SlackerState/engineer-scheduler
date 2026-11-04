@@ -124,13 +124,20 @@
 <section id="v-parts" class="view">
   <header class="bar">
     <h1>配件</h1>
-    <div class="seg" id="p-tabs"><button data-tab="borrow" class="on">借料归还</button><button data-tab="charge">收费配件</button></div>
+    <div class="seg" id="p-tabs"><button data-tab="borrow" class="on">借料归还</button><button data-tab="charge">收费配件</button><button data-tab="lookup">查库存/图片</button></div>
     <span class="muted small">数据来自 D365（随「同步 D365」更新）；配件消耗可在工单详情里改，其它请点单据号到 D365 里操作</span>
   </header>
   <div id="p-borrow">
     <div class="row chips"><span class="row chips" id="b-chips" style="margin:0"></span>
       <button id="b-email" style="margin-left:auto" title="借料单审批通过、拿到 ERP 号后，生成发给仓库的邮件内容">借料邮件</button></div>
     <div class="table-wrap"><table class="grid" id="b-table"></table></div>
+  </div>
+  <div id="p-lookup" class="lookup" hidden>
+    <div class="row"><input id="lk-kw" type="search" placeholder="物料号或英文名称，如 A820102010387、Filter" style="flex:1;max-width:460px">
+      <button class="primary" id="lk-go">查询</button>
+      <span class="muted small">库存来自 iWMS（英国各仓，英格兰配件库排第一），图片来自 SIS</span></div>
+    <div id="lk-list"></div>
+    <div id="lk-info" class="pi"></div>
   </div>
   <div id="p-charge" hidden>
     <div class="row" style="margin-bottom:10px">

@@ -616,6 +616,8 @@ async function loadParts() {
   $$('#p-tabs [data-tab]').forEach(b => b.classList.toggle('on', b.dataset.tab === S.partsTab));
   $('#p-borrow').hidden = S.partsTab !== 'borrow';
   $('#p-charge').hidden = S.partsTab !== 'charge';
+  $('#p-lookup').hidden = S.partsTab !== 'lookup';
+  if (S.partsTab === 'lookup') { $('#lk-kw').focus(); return; }
   if (S.partsTab === 'borrow') return loadBorrows();
   const cur = $('#c2-eng').value;
   $('#c2-eng').innerHTML = '<option value="">全部工程师</option>' + S.engineers.map(e => `<option>${esc(e.name)}</option>`).join('');
@@ -777,49 +779,87 @@ async function stockSummary(el, no) {
     : '<b class="warn">没有可用库存</b>'}` : ''}${others.length ? `<span class="muted"> · 其它仓：${others.map(x => `${esc(x.name)} ${qty(x.available)}`).join('、')}</span>` : ''}</span>`;
 }
 
+// 一个配件的英国仓库存（iWMS）和图片（SIS），显示在 el 里。弹窗和「配件 → 查库存/图片」共用
+function partInfo(el, no) {
+  el.innerHTML = `<div class="sec small">英国仓库存 <span class="muted">· iWMS</span></div><div data-pi-stock></div>
+    <div class="sec small">图片 <span class="muted">· SIS</span></div><div data-pi-ph></div>`;
+  const loadStock = async () => {
+    const box = $('[data-pi-stock]', el);
+    box.innerHTML = '<div class="empty">正在查 iWMS…</div>';
+    const r = await safe(() => api('part_stock', no));
+    if (!box.isConnected) return;
+    if (!r) { box.innerHTML = '<div class="empty">没查到，稍后再试</div>'; return; }
+    if (r.need_login) { loginPrompt(box, 'iWMS', 'iwms_login', '三一统一登录，约 24 小时有效', loadStock); return; }
+    box.innerHTML = stockHtml(r);
+  };
+  const loadPhotos = async () => {
+    const body = $('[data-pi-ph]', el);
+    body.innerHTML = '<div class="empty">正在查 SIS…</div>';
+    const r = await safe(() => api('part_photos', no));
+    if (!body.isConnected) return;
+    if (!r) { body.innerHTML = '<div class="empty">没查到，稍后再试</div>'; return; }
+    if (r.need_login) { loginPrompt(body, 'SIS', 'sis_login', 'SIS 登录 12 小时有效', loadPhotos); return; }
+    if (!r.photos.length) { body.innerHTML = '<div class="empty">SIS 里这个配件没有图片</div>'; return; }
+    let cur = 0;
+    body.innerHTML = `<div class="ph-big" title="点击放大查看"><img class="ph-img" alt="${esc(no)}"></div>
+      ${r.photos.length > 1 ? `<div class="ph-thumbs">${r.photos.map((p, i) => `<img src="${esc(p.thumb)}" data-i="${i}" loading="lazy" alt="">`).join('')}</div>` : ''}
+      <div class="row"><span class="muted small" data-ph-n></span><span class="muted small">点图片可放大、拖动、旋转</span>
+        <button class="link" data-ph-open style="margin-left:auto">在浏览器打开原图 ↗</button></div>`;
+    const show = i => {
+      cur = i;
+      $('.ph-img', body).src = r.photos[i].thumb;
+      $$('.ph-thumbs img', body).forEach(x => x.classList.toggle('on', +x.dataset.i === i));
+      $('[data-ph-n]', body).textContent = `${i + 1} / ${r.photos.length}`;
+    };
+    body.onclick = e => {
+      const t = e.target.closest('[data-i]');
+      if (t) show(+t.dataset.i); else if (e.target.classList.contains('ph-img')) viewPhotos(r.photos, cur, no);
+    };
+    $('[data-ph-open]', body).onclick = () => api('open_url', r.photos[cur].full);
+    show(0);
+  };
+  loadStock();
+  loadPhotos();
+}
+
 function partInfoDialog(no, name) {
   modal(`<h2>配件 <span class="mono">${esc(no)}</span></h2>
     <div class="muted small">${esc(name || '')}</div>
-    <div class="sec small">英国仓库存 <span class="muted">· iWMS</span></div><div id="pi-stock"><div class="empty">正在查 iWMS…</div></div>
-    <div class="sec small">图片 <span class="muted">· SIS</span></div><div id="ph-body"><div class="empty">正在查 SIS…</div></div>
+    <div data-pi class="pi"></div>
     <div class="actions"><button data-close>关闭</button></div>`, (box, close) => {
     $('[data-close]', box).onclick = close;
-    const loadStock = async () => {
-      const el = $('#pi-stock', box);
-      el.innerHTML = '<div class="empty">正在查 iWMS…</div>';
-      const r = await safe(() => api('part_stock', no));
-      if (!r) { el.innerHTML = '<div class="empty">没查到，稍后再试</div>'; return; }
-      if (r.need_login) { loginPrompt(el, 'iWMS', 'iwms_login', '三一统一登录，约 24 小时有效', loadStock); return; }
-      el.innerHTML = stockHtml(r);
-    };
-    const loadPhotos = async () => {
-      const body = $('#ph-body', box);
-      body.innerHTML = '<div class="empty">正在查 SIS…</div>';
-      const r = await safe(() => api('part_photos', no));
-      if (!r) { body.innerHTML = '<div class="empty">没查到，稍后再试</div>'; return; }
-      if (r.need_login) { loginPrompt(body, 'SIS', 'sis_login', 'SIS 登录 12 小时有效', loadPhotos); return; }
-      if (!r.photos.length) { body.innerHTML = '<div class="empty">SIS 里这个配件没有图片</div>'; return; }
-      let cur = 0;
-      body.innerHTML = `<div class="ph-big" title="点击放大查看"><img id="ph-img" alt="${esc(no)}"></div>
-        ${r.photos.length > 1 ? `<div class="ph-thumbs">${r.photos.map((p, i) => `<img src="${esc(p.thumb)}" data-i="${i}" loading="lazy" alt="">`).join('')}</div>` : ''}
-        <div class="row"><span class="muted small" id="ph-n"></span><span class="muted small">点图片可放大、拖动、旋转</span>
-          <button class="link" id="ph-open" style="margin-left:auto">在浏览器打开原图 ↗</button></div>`;
-      const show = i => {
-        cur = i;
-        $('#ph-img', box).src = r.photos[i].thumb;
-        $$('.ph-thumbs img', box).forEach(x => x.classList.toggle('on', +x.dataset.i === i));
-        $('#ph-n', box).textContent = `${i + 1} / ${r.photos.length}`;
-      };
-      body.onclick = e => {
-        const t = e.target.closest('[data-i]');
-        if (t) show(+t.dataset.i); else if (e.target.id === 'ph-img') viewPhotos(r.photos, cur, no);
-      };
-      $('#ph-open', box).onclick = () => api('open_url', r.photos[cur].full);
-      show(0);
-    };
-    loadStock();
-    loadPhotos();
+    partInfo($('[data-pi]', box), no);
   });
+}
+
+// 配件 → 查库存/图片：输入物料号或英文名称，先在 D365 物料主数据里找；输入的正好是完整物料号时直接显示。
+// D365 没登录或没找到时，按输入的物料号直接查 iWMS 和 SIS（这两个系统不需要 D365）
+async function lookupPart() {
+  const kw = $('#lk-kw').value.trim();
+  if (kw.length < 2) { toast('至少输入 2 个字符', true); return; }
+  S.lookupKw = kw;
+  const list = $('#lk-list'), info = $('#lk-info');
+  list.innerHTML = '<div class="empty">正在查 D365 物料…</div>'; info.innerHTML = '';
+  let rows = null, err = '';
+  try { rows = await api('search_parts', kw); } catch (e) { err = e.message || String(e); }
+  if (S.lookupKw !== kw) return;  // 已经在查别的了
+  const looksLikeNo = /\d/.test(kw) && !/\s/.test(kw);
+  const exact = (rows || []).find(r => r.no.toUpperCase() === kw.toUpperCase());
+  const pick = (no, name) => {
+    $$('#lk-list tr[data-no]').forEach(tr => tr.classList.toggle('sel', tr.dataset.no === no));
+    info.innerHTML = `<div class="row"><h2 style="margin:0">配件 <span class="mono">${esc(no)}</span></h2><span class="muted">${esc(name || '')}</span></div>
+      <div data-pi class="pi"></div>`;
+    partInfo($('[data-pi]', info), no);
+  };
+  list.innerHTML = rows && rows.length
+    ? `<div class="table-wrap" style="max-height:30vh"><table class="grid compact"><thead><tr><th>物料号</th><th>名称</th><th></th></tr></thead><tbody>` +
+      rows.map(r => `<tr data-no="${esc(r.no)}" data-name="${esc(r.name)}"><td class="mono">${esc(r.no)}</td><td>${esc(r.name)}</td>
+        <td><button class="link">查看库存和图片</button></td></tr>`).join('') + '</tbody></table></div>'
+    : `<div class="muted small">${err ? `D365 物料没查成（${esc(err)}）` : 'D365 物料主数据里没有找到'}${looksLikeNo ? '，下面直接按这个物料号查 iWMS 和 SIS' : '，换个关键字试试'}</div>`;
+  list.onclick = e => { const tr = e.target.closest('tr[data-no]'); if (tr) pick(tr.dataset.no, tr.dataset.name); };
+  if (exact) pick(exact.no, exact.name);
+  else if (rows && rows.length === 1) pick(rows[0].no, rows[0].name);
+  else if (looksLikeNo && !(rows && rows.length)) pick(kw.toUpperCase(), '');
 }
 
 // 全屏看原图（Viewer.js）：滚轮缩放、拖动、旋转，左右键切换，Esc 关闭
@@ -1579,6 +1619,8 @@ async function init() {
     $('#o-status').value = k.dataset.goto; show('orders');
   });
   // 配件页
+  $('#lk-go').onclick = lookupPart;
+  $('#lk-kw').onkeydown = e => { if (e.key === 'Enter') lookupPart(); };
   $('#p-tabs').onclick = e => { const b = e.target.closest('[data-tab]'); if (b) { S.partsTab = b.dataset.tab; loadParts(); } };
   $('#b-email').onclick = openBorrowEmail;
   $('#b-chips').onclick = e => { const c = e.target.closest('[data-state]'); if (c) { S.borrowState = c.dataset.state; loadBorrows(); } };

@@ -272,3 +272,9 @@ td.st-blank { color: var(--muted); }
 .grid tr.filters .ts-control { padding: 3px 22px 3px 5px; }
 .ts-wrapper.single .ts-control::after { content: ""; position: absolute; right: 9px; top: 50%; margin-top: -2px; border: 4px solid transparent;
   border-top-color: var(--muted); border-bottom: 0; }
+
+/* 配件 → 查库存/图片 */
+.pi { display: grid; gap: 12px; }
+.lookup:not([hidden]) { display: grid; gap: 12px; max-width: 900px; }
+.lookup tr[data-no] { cursor: pointer; }
+.lookup tr.sel td { background: var(--hover); }
