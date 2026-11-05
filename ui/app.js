@@ -802,12 +802,13 @@ function partInfo(el, no) {
     if (!r.photos.length) { body.innerHTML = '<div class="empty">SIS 里这个配件没有图片</div>'; return; }
     let cur = 0;
     body.innerHTML = `<div class="ph-big" title="点击放大查看"><img class="ph-img" alt="${esc(no)}"></div>
-      ${r.photos.length > 1 ? `<div class="ph-thumbs">${r.photos.map((p, i) => `<img src="${esc(p.thumb)}" data-i="${i}" loading="lazy" alt="">`).join('')}</div>` : ''}
+      ${r.photos.length > 1 ? `<div class="ph-thumbs">${r.photos.map((p, i) => `<img src="${esc(p.thumb)}" data-fallback="${esc(p.full)}" data-i="${i}" loading="lazy" alt="">`).join('')}</div>` : ''}
       <div class="row"><span class="muted small" data-ph-n></span><span class="muted small">点图片可放大、拖动、旋转</span>
         <button class="link" data-ph-open style="margin-left:auto">在浏览器打开原图 ↗</button></div>`;
     const show = i => {
       cur = i;
-      $('.ph-img', body).src = r.photos[i].thumb;
+      $('.ph-img', body).dataset.fallback = r.photos[i].full;
+      $('.ph-img', body).src = r.photos[i].preview || r.photos[i].thumb;
       $$('.ph-thumbs img', body).forEach(x => x.classList.toggle('on', +x.dataset.i === i));
       $('[data-ph-n]', body).textContent = `${i + 1} / ${r.photos.length}`;
     };
@@ -892,7 +893,7 @@ async function lookupBatch(nos) {
     if (!tr) return;
     const ok = r.stock && typeof r.stock === 'object', w = ok && main(r);
     const ph = Array.isArray(r.photos) ? (r.photos.length
-      ? `<img class="lk-thumb" src="${esc(r.photos[0].thumb)}" alt="">${r.photos.length > 1 ? ` <span class="muted small">共 ${r.photos.length}</span>` : ''}`
+      ? `<img class="lk-thumb" src="${esc(r.photos[0].thumb)}" data-fallback="${esc(r.photos[0].full)}" loading="lazy" alt="">${r.photos.length > 1 ? ` <span class="muted small">共 ${r.photos.length}</span>` : ''}`
       : '<span class="muted">无</span>') : wait(r.photos);
     tr.innerHTML = `<td class="mono">${esc(r.no)}</td><td>${esc(r.name)}</td>
       <td>${ok ? (w && w.available > 0 ? `<b class="good">${qty(w.available)}</b> ${esc(w.unit)}` : '<b class="warn">0</b>') : wait(r.stock)}</td>
@@ -950,6 +951,12 @@ async function lookupBatch(nos) {
   if (login.stock) loginPrompt($('#lk-login-iwms'), 'iWMS', 'iwms_login', '三一统一登录，约 24 小时有效', again);
   if (login.photos) loginPrompt($('#lk-login-sis'), 'SIS', 'sis_login', 'SIS 登录 12 小时有效', again);
 }
+
+// 缩小的配件图片（地址带 imageMogr2，由 SIS 的图片服务器缩小）万一打不开，就退回原图
+document.addEventListener('error', e => {
+  const i = e.target;
+  if (i.tagName === 'IMG' && i.dataset.fallback && i.src !== i.dataset.fallback) i.src = i.dataset.fallback;
+}, true);
 
 // 全屏看原图（Viewer.js）：滚轮缩放、拖动、旋转，左右键切换，Esc 关闭
 function viewPhotos(photos, index, no) {

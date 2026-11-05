@@ -5,6 +5,8 @@
   请求头 Authorization = 登录 token（网页登录后存在 Cookie「Admin-Token」里，JWT，12 小时有效），
         Authorization-userId = token 里的 userId；不需要 Cookie
   返回 data: [{filePath, fileThumbnailPath, ...}]，图片在 https://gmps-cos.sany.com.cn/<路径>，不用登录就能打开
+  fileThumbnailPath 名为缩略图，实际和原图一样是 6016×4016（约 2 MB）。图片服务器是腾讯云 COS，
+  地址后加 ?imageMogr2/thumbnail/<宽>x 就返回按宽度缩小的图（200 宽约 20 KB），列表和预览都用缩小的
 token 缺失或过期时返回 code 10001。SIS 登录有验证码，所以由用户在软件的浏览器窗口里自己登录。
 """
 from __future__ import annotations
@@ -18,6 +20,7 @@ from .browser import NeedLogin
 
 SIS_URL = "https://sis-global.sanygroup.com"
 IMG_BASE = "https://gmps-cos.sany.com.cn/"
+THUMB_WIDTH, PREVIEW_WIDTH = 200, 1200  # 列表、小图用 200 宽；弹窗里的大图用 1200 宽；全屏看原图
 TOKEN_COOKIE = "Admin-Token"
 
 
@@ -38,6 +41,10 @@ class Sis:
     @property
     def base(self) -> str:
         return (self.get_settings().get("sis_url") or SIS_URL).rstrip("/")
+
+    @property
+    def img_base(self) -> str:
+        return (self.get_settings().get("sis_img_url") or IMG_BASE).rstrip("/") + "/"
 
     def _token(self) -> tuple[str, dict]:
         """返回还有效的 token 和它的内容（userId、exp），没有或快过期了就要重新登录。"""
@@ -81,14 +88,19 @@ class Sis:
         return j.get("data")
 
     def photos(self, part_no: str) -> list[dict]:
-        """配件图片：[{thumb, full, name}]，没有图片返回空列表。同一物料号只查一次。"""
+        """配件图片：[{thumb, preview, full, name}]，没有图片返回空列表。同一物料号只查一次。
+        原图有 2400 万像素，几十张一起显示会让页面卡住（Mac 版窗口按原尺寸解码），所以 thumb / preview 是缩小的"""
         no = (part_no or "").strip()
         if not no:
             return []
         if no not in self._cache:
             rows = self._call("/bom-server/materialLink/queryGmpsPhotoByMateriaCode", {"materiaCode": no}) or []
             rows.sort(key=lambda r: r.get("filePath") or "")
-            self._cache[no] = [{"thumb": IMG_BASE + (r.get("fileThumbnailPath") or r.get("filePath") or ""),
-                                "full": IMG_BASE + (r.get("filePath") or r.get("fileThumbnailPath") or ""),
-                                "name": (r.get("filePath") or "").rsplit("/", 1)[-1]} for r in rows]
+            out = []
+            for r in rows:
+                full = self.img_base + (r.get("filePath") or r.get("fileThumbnailPath") or "")
+                out.append({"thumb": f"{full}?imageMogr2/thumbnail/{THUMB_WIDTH}x",
+                            "preview": f"{full}?imageMogr2/thumbnail/{PREVIEW_WIDTH}x",
+                            "full": full, "name": (r.get("filePath") or "").rsplit("/", 1)[-1]})
+            self._cache[no] = out
         return self._cache[no]
