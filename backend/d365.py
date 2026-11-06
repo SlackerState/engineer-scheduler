@@ -304,14 +304,21 @@ class D365:
                 "receiver": o.get("mcs_receiver") or "", "phone": o.get("mcs_receiverphone") or "",
                 "address": o.get("mcs_receiveraddress") or ""}
 
-    def apply_parts(self, rid: str) -> str:
-        """申请备件（Service_ApplyForPartsApi），生成借料单，返回借料单 id。"""
+    def apply_parts(self, rid: str, part_ids: list[str] | None = None) -> dict:
+        """申请备件（Service_ApplyForPartsApi），生成借料单。part_ids：只申请这几个待申请的配件（不给 = 全部）。
+        D365 的申请备件只接收工单号，会把所有待申请的配件都放进新借料单，所以申请后把没选的从这张单上移出
+        （借料单「已创建」时上面只有配件的关联，没有其它明细，D365 也没有插件拦这个字段）。
+        返回 {material_id, released: 移出的配件, release_failed: 没能移出的配件（及原因）}。"""
         chk = self.apply_check(rid)
         if chk["blockers"]:
             raise RuntimeError("；".join(chk["blockers"]))
         missing = [n for n, k in (("收货人", "receiver"), ("收货电话", "phone"), ("收货地址", "address")) if not chk[k].strip()]
         if missing:
             raise RuntimeError("请先填写" + "、".join(missing))
+        pending = {p["id"]: p for p in chk["pending"]}
+        keep = set(pending) if part_ids is None else set(part_ids) & set(pending)
+        if not keep:
+            raise RuntimeError("请至少勾选一个要申请的配件")
         data = self.browser.fetch_json(self.base, self._api("Service_ApplyForPartsApi"), method="POST", body={"OrderId": rid})
         res = data.get("Result")
         if isinstance(res, str) and res.strip().startswith("{"):
@@ -319,7 +326,73 @@ class D365:
             if j.get("IsSuccess") is False:
                 raise RuntimeError(j.get("Message") or "申请备件失败")
             res = j.get("Data") or j.get("Id") or ""
-        return str(res or "")
+        out = {"material_id": str(res or ""), "released": [], "release_failed": []}
+        drop = [i for i in pending if i not in keep]
+        if not drop:
+            return out
+        now = {p["id"]: p for p in self._order_parts(rid)}
+        # 新借料单以勾选的配件实际挂上的那张为准（D365 返回的 id 万一为空也能找到）
+        mid = out["material_id"] or next((now[i]["material_id"] for i in keep if now.get(i, {}).get("material_id")), "")
+        out["material_id"] = mid
+        for i in drop:
+            p = now.get(i)
+            if not p or not p["material_id"] or p["material_id"] != mid:
+                continue  # 没进这张新单（如 D365 没把它放进去），不用动
+            try:
+                self._unlink_material(i)
+                out["released"].append(_part_label(p))
+            except NeedLogin:
+                raise
+            except Exception as e:  # noqa: BLE001 - 记下来，界面提示到 D365 里处理
+                out["release_failed"].append(f"{_part_label(p)}（{e}）")
+        # 读回确认：真的回到了待申请
+        after = {p["id"]: p for p in self._order_parts(rid)}
+        for i in drop:
+            p = after.get(i)
+            if p and p["material_id"] == mid and _part_label(p) in out["released"]:
+                out["released"].remove(_part_label(p))
+                out["release_failed"].append(f"{_part_label(p)}（D365 里仍在借料单上）")
+        return out
+
+    def _order_parts(self, rid: str) -> list[dict]:
+        return [normalize_part(r) for r in self._by_orders("mcs_serviceparts", PART_SELECT, "_mcs_serviceorder_value", [rid])]
+
+    def _unlink_material(self, part_id: str) -> None:
+        """把服务配件从借料单上移出（清空配件的「借料单」关联，同 D365 子表里的「移除」）。"""
+        if not hasattr(self, "_material_nav"):
+            # Web API 解除关联要用导航属性名，从元数据取；取不到就用字段名
+            flt = quote("ReferencingAttribute eq 'mcs_repairmaterialorderid'")
+            try:
+                r = self.browser.fetch_json(self.base, self._api(
+                    "EntityDefinitions(LogicalName='mcs_servicepart')/ManyToOneRelationships"
+                    f"?$select=ReferencingAttribute,ReferencingEntityNavigationPropertyName&$filter={flt}"))
+                self._material_nav = ((r.get("value") or [{}])[0].get("ReferencingEntityNavigationPropertyName")
+                                      or "mcs_repairmaterialorderid")
+            except NeedLogin:
+                raise
+            except Exception:  # noqa: BLE001
+                self._material_nav = "mcs_repairmaterialorderid"
+        self.browser.fetch_json(self.base, self._api(f"mcs_serviceparts({part_id})/{self._material_nav}/$ref"), method="DELETE")
+
+    def release_part(self, part_id: str) -> str:
+        """把一个配件从还没提交的借料单（已创建 / 已拒绝）上移出，配件回到待申请。返回配件名称。"""
+        sel = "mcs_partfullname,mcs_consumptionquantity,_mcs_repairmaterialorderid_value,_mcs_partswriteoffdocid_value"
+        p = self.browser.fetch_json(self.base, self._api(f"mcs_serviceparts({part_id})?$select={sel}"))
+        name = p.get("mcs_partfullname") or "配件"
+        mid = p.get("_mcs_repairmaterialorderid_value")
+        if not mid:
+            raise RuntimeError(f"{name} 不在借料单上")
+        m = self._material_live(mid)
+        if m.get("mcs_orderstatus") not in MAT_EDITABLE:
+            raise RuntimeError(f"借料单 {m.get('mcs_code')} 当前是「{m.get('mcs_orderstatus' + FV) or m.get('mcs_orderstatus')}」，"
+                               "已提交的借料单不能移出配件")
+        if p.get("_mcs_partswriteoffdocid_value") or (p.get("mcs_consumptionquantity") or 0) > 0:
+            raise RuntimeError(f"{name} 已有消耗或核销记录，不能移出")
+        self._unlink_material(part_id)
+        if self.browser.fetch_json(self.base, self._api(f"mcs_serviceparts({part_id})?$select=_mcs_repairmaterialorderid_value")) \
+                .get("_mcs_repairmaterialorderid_value"):
+            raise RuntimeError(f"{name} 在 D365 里仍在借料单上，请到 D365 借料单里处理")
+        return name
 
     def _material_live(self, mid: str) -> dict:
         sel = ("mcs_code,mcs_type,mcs_orderstatus,_mcs_seller_value,_mcs_customer_value,_mcs_serviceorderid_value,"
@@ -390,7 +463,7 @@ class D365:
     def material_form(self, mid: str) -> dict:
         m = self.browser.fetch_json(self.base, self._api(f"mcs_repairmaterialorders({mid})?$select={self.MAT_EDIT_SELECT}"))
         st = m.get("mcs_orderstatus")
-        editable = st in (10, 40) and m.get("mcs_type") != MAT_RETURN
+        editable = st in MAT_EDITABLE and m.get("mcs_type") != MAT_RETURN
         so = m.get("_mcs_serviceorderid_value")
         lock, lock_wh = "", ""
         if so:
@@ -604,6 +677,7 @@ PROGRESS_SELECT = ["mcs_serviceorderprocessingprogressid", "_mcs_serviceorder_va
                    "mcs_processingtime", "createdon", "_ownerid_value", "statecode"]
 # mcs_repairmaterialorder.mcs_type：10 向事业部领料 · 20 向子公司借料 · 30 归还单 · 40 向子公司领料 · 50 向寄售库领料
 MAT_BORROW, MAT_RETURN = 20, 30
+MAT_EDITABLE = (10, 40)  # 已创建、已拒绝：还没提交，可以改借料单信息、移出配件
 # 借料单空着时的默认填法（英国：订单原因 紧急备件、出库方式 子公司出库、仓库 England Parts WH）
 MAT_DEFAULT_REASON = 803750001
 MAT_DEFAULT_OUTBOUND = 10
@@ -614,6 +688,10 @@ CONSUMPTION_LOCKED = {15, 105, 110, 130, 140}
 
 def _fv(rec: dict, k: str):
     return rec.get(k + FV) or (rec.get(k) if rec.get(k) is not None else "")
+
+
+def _part_label(p: dict) -> str:
+    return f"{p['part_no']} {p['name']}".strip()
 
 
 def normalize_part(r: dict) -> dict:

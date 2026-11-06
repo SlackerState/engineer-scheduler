@@ -1067,6 +1067,7 @@ function applyDialog(oid) {
     $('[data-close]', box).onclick = close;
     const c0 = await safe(() => api('apply_check', oid));
     if (!c0) { close(); return; }
+    const picked = new Set(c0.pending.map(p => p.id));  // 默认全选；重新检查后保留勾选
     const opts = (list, cur) => '<option value="">不填</option>' + list.map(o => `<option value="${o.value}" ${o.value === cur ? 'selected' : ''}>${esc(o.label)}</option>`).join('');
     const render = c => {
     // 已经填的收货信息在重新检查后保留
@@ -1084,10 +1085,12 @@ function applyDialog(oid) {
           <label>&nbsp;<button class="primary" id="aa-fault">改为存在故障</button></label>
         </div></div>` : ''}
       ${(c.warnings || []).length ? `<div class="check warn-box">${c.warnings.map(esc).join('<br>')}</div>` : ''}
-      <div class="sec small">这次申请的配件（${c.pending.length} 个，还没在借料单上的）</div>
-      ${c.pending.length ? `<table class="grid compact"><thead><tr><th>物料号</th><th>名称</th><th>数量</th></tr></thead><tbody>` +
-        c.pending.map(p => `<tr><td class="mono">${esc(p.part_no)}</td><td>${esc(p.name)}</td><td>${qty(p.quantity)}</td></tr>`).join('') + '</tbody></table>'
+      <div class="sec small">这次申请的配件 <span class="muted" id="aa-n"></span></div>
+      ${c.pending.length ? `<table class="grid compact"><thead><tr><th><input type="checkbox" id="aa-all" title="全选 / 全不选"></th><th>物料号</th><th>名称</th><th>数量</th></tr></thead><tbody>` +
+        c.pending.map(p => `<tr><td><input type="checkbox" class="aa-pk" value="${esc(p.id)}" ${picked.has(p.id) ? 'checked' : ''}></td>
+          <td class="mono">${esc(p.part_no)}</td><td>${esc(p.name)}</td><td>${qty(p.quantity)}</td></tr>`).join('') + '</tbody></table>'
         : '<div class="muted small">没有</div>'}
+      <p class="muted small" style="margin:0" id="aa-pk-hint"></p>
       <div class="sec small">收货信息（写在 D365 工单上，申请必填）</div>
       <div class="form">
         <label>收货人<input id="aa-rc" value="${esc(rc)}"></label>
@@ -1095,7 +1098,19 @@ function applyDialog(oid) {
         <label>收货地址<textarea id="aa-ad" rows="3">${esc(ad)}</textarea></label>
       </div>
       <p class="muted small" style="margin:0">确认后调用 D365「申请备件」，生成「向子公司借料」单（已创建状态），之后在配件区点「提交审批」。</p>`;
-    $('#aa-ok', box).disabled = !!c.blockers.length;
+    const sync = () => {
+      const n = $$('.aa-pk:checked', box).length, all = c.pending.length;
+      picked.clear(); $$('.aa-pk:checked', box).forEach(x => picked.add(x.value));
+      if ($('#aa-all', box)) { $('#aa-all', box).checked = n === all; $('#aa-all', box).indeterminate = n > 0 && n < all; }
+      $('#aa-n', box).textContent = `（勾选 ${n} / ${all} 个待申请的）`;
+      $('#aa-pk-hint', box).textContent = n && n < all
+        ? `D365 的申请备件会把全部待申请配件放进新借料单，软件会随后把没勾选的 ${all - n} 个移出，它们仍是「待申请」，以后可以再申请。` : '';
+      $('#aa-ok', box).disabled = !!c.blockers.length || !n;
+      $('#aa-ok', box).textContent = n && n < all ? `申请借料（${n} 个）` : '申请借料';
+    };
+    if ($('#aa-all', box)) $('#aa-all', box).onchange = e => { $$('.aa-pk', box).forEach(x => (x.checked = e.target.checked)); sync(); };
+    $$('.aa-pk', box).forEach(x => (x.onchange = sync));
+    sync();
     if ($('#aa-fault', box)) $('#aa-fault', box).onclick = async () => {
       if (!await ask('把这张工单的「是否存在故障」改为「是」，写回 D365？', '改为存在故障')) return;
       $('#aa-fault', box).disabled = true;
@@ -1111,11 +1126,20 @@ function applyDialog(oid) {
       const miss = [['收货人', 'receiver'], ['收货电话', 'phone'], ['收货地址', 'address']].filter(([, k]) => !receiver[k].trim()).map(x => x[0]);
       if (miss.length) { toast('请先填写' + miss.join('、'), true); return; }
       $('#aa-ok', box).disabled = true; $('#aa-ok', box).textContent = '正在提交 D365…';
-      const res = await safe(() => api('apply_parts', oid, receiver));
+      const res = await safe(() => api('apply_parts', oid, receiver, [...picked]));
       if (!res) { $('#aa-ok', box).disabled = false; $('#aa-ok', box).textContent = '申请借料'; return; }
       close();
       await loadOrderParts(oid);
-      toast(`已在 D365 生成借料单 ${res.material.code || ''}，请核对借料单信息后提交审批`);
+      if (res.release_failed.length) {
+        // 借料单已生成，但有没勾选的配件没能移出：提交审批前要处理，否则会一起借出
+        await new Promise(done => modal(`<h2>借料单 ${esc(res.material.code || '')} 已生成，但有配件没能移出</h2>
+          <div class="check bad">这些没勾选的配件还在借料单上：<br>${res.release_failed.map(esc).join('<br>')}</div>
+          <p>提交审批前，请在工单详情的配件表里点它们旁边的「移出」再试，或到 D365 借料单里移除；否则会和勾选的配件一起借出。</p>
+          <div class="actions"><button class="primary" data-close>知道了</button></div>`,
+          (b, c) => { $('[data-close]', b).onclick = () => { c(); done(); }; }, {sticky: true}));
+      } else {
+        toast(`已在 D365 生成借料单 ${res.material.code || ''}${res.released.length ? `，没勾选的 ${res.released.length} 个配件已移出、仍是待申请` : ''}，请核对借料单信息后提交审批`);
+      }
       materialDialog(oid, res.material.id);
     };
   }, {sticky: true});
@@ -1289,6 +1313,9 @@ async function loadOrderParts(oid, refresh) {
   // 加配件 / 申请借料：工单还没完工、没取消时可以（D365 会再按自己的规则检查一遍）
   const partsWritable = !PARTS_LOCKED.includes((S.curOrder || {}).d365_status_code) && !r.stale;
   const pending = r.parts.filter(p => !p.material_id);
+  // 借料单还没提交（已创建 / 已拒绝），配件没消耗、没核销：可以从借料单上移出
+  const releasable = p => { const m = r.materials.find(x => x.id === p.material_id);
+    return m && [10, 40].includes(m.status_code) && !p.writeoff_doc && !(p.consumption_qty > 0); };
   // 配件核销：同 D365，工单「服务完工」且不是服务代理商模式时才有按钮（能核销哪些由 D365 判断）
   const canWriteoff = (S.curOrder || {}).d365_status_code === 110 && !r.stale;
   // 「申请备件」生成的借料单订单类型可能还空着，也要能填写提交
@@ -1311,7 +1338,8 @@ async function loadOrderParts(oid, refresh) {
              <button class="link" data-save-cq hidden>保存</button>`}</td>
         <td class="${p.remaining_qty > 0 ? 'warn' : ''}">${qty(p.remaining_qty)}</td>
         <td>${p.is_charge ? '<span class="badge b-处理中">收费</span>' : '<span class="muted">否</span>'}</td>
-        <td class="nowrap">${esc(p.total_text)}</td><td class="mono small nowrap">${p.material_id ? esc(p.material_code)
+        <td class="nowrap">${esc(p.total_text)}</td><td class="mono small nowrap">${p.material_id ? esc(p.material_code) + (partsWritable && releasable(p)
+          ? ` <button class="link" data-release-part="${esc(p.id)}" title="借料单还没提交审批：把这个配件从借料单上移出，回到待申请">移出</button>` : '')
           : `<span class="tag">待申请</span>${partsWritable ? ` <button class="link danger" data-del-part="${esc(p.id)}" title="从 D365 删除这条配件">删除</button>` : ''}`}</td></tr>`; }).join('') + '</tbody></table>' +
       '<div class="muted small">改「消耗」后点保存，直接写入 D365；剩余数量 = 确认 − 消耗，由 D365 重新计算。</div>'
       : '<div class="muted small">这单没有配件（或还没同步）</div>'}
@@ -1343,6 +1371,13 @@ async function loadOrderParts(oid, refresh) {
   };
   box.onclick = async e => {
     if (e.target.dataset.phNo) { partInfoDialog(e.target.dataset.phNo, $('td div', e.target.closest('tr')).textContent); return; }
+    if (e.target.dataset.releasePart) {
+      const tr = e.target.closest('tr'), name = $('td div', tr).textContent, code = e.target.parentElement.firstChild.textContent.trim();
+      if (!await ask(`把「${name}」从借料单 ${code} 上移出？\n配件会回到「待申请」，以后可以再申请；借料单上的其它配件不受影响。会写入 D365。`, '移出')) return;
+      const res = await safe(() => api('release_order_part', oid, e.target.dataset.releasePart));
+      if (res) { toast(`已从借料单移出：${res.released}（回到待申请）`); loadOrderParts(oid); }
+      return;
+    }
     if (e.target.dataset.delPart) {
       const name = $('td div', e.target.closest('tr')).textContent;
       if (!await ask(`从 D365 删除这条还没申请的配件「${name}」？`, '删除')) return;

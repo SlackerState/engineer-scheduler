@@ -326,8 +326,9 @@ class Api:
         self._refresh_from_d365([o["d365_id"]])
         return self._d365_call(self._d365.apply_check, o["d365_id"])
 
-    def apply_parts(self, oid, receiver=None):
-        """申请借料：收货信息有改动时先写回工单，再调 D365「申请备件」，返回新借料单。"""
+    def apply_parts(self, oid, receiver=None, part_ids=None):
+        """申请借料：收货信息有改动时先写回工单，再调 D365「申请备件」，返回新借料单。
+        part_ids：只申请勾选的待申请配件，没勾的申请后从借料单上移出（见 D365.apply_parts）。"""
         o = self._d365_order(oid)
         if receiver:
             cur = self._d365_call(self._d365.apply_check, o["d365_id"])
@@ -337,11 +338,20 @@ class Api:
                 if missing:
                     raise ValueError("请先填写" + "、".join(missing))
                 self._d365_call(self._d365.set_receiver, o["d365_id"], new["receiver"], new["phone"], new["address"])
-        mid = self._d365_call(self._d365.apply_parts, o["d365_id"])
+        r = self._d365_call(self._d365.apply_parts, o["d365_id"], part_ids)
+        mid = r["material_id"]
         self._sync.sync_parts([o["d365_id"]])
         res = self.order_parts(oid)
         mat = next((m for m in res["materials"] if m["id"] == mid), None)
-        return {**res, "material": mat or {"id": mid, "code": ""}}
+        return {**res, "material": mat or {"id": mid, "code": ""}, "released": r["released"],
+                "release_failed": r["release_failed"]}
+
+    def release_order_part(self, oid, part_id):
+        """把配件从还没提交的借料单上移出，回到待申请。"""
+        o = self._d365_order(oid)
+        name = self._d365_call(self._d365.release_part, part_id)
+        self._sync.sync_parts([o["d365_id"]])
+        return {**self.order_parts(oid), "released": name}
 
     def material_check(self, oid, mid):
         self._d365_order(oid)
