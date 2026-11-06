@@ -375,7 +375,8 @@ class D365:
         self.browser.fetch_json(self.base, self._api(f"mcs_serviceparts({part_id})/{self._material_nav}/$ref"), method="DELETE")
 
     def release_part(self, part_id: str) -> str:
-        """把一个配件从还没提交的借料单（已创建 / 已拒绝）上移出，配件回到待申请。返回配件名称。"""
+        """把一个配件从还没提交（已创建 / 已拒绝）或已取消的借料单上移出，配件回到待申请。返回配件名称。
+        D365 取消借料单时不会放开上面的配件，它们仍挂在已取消的单上，申请备件也不会再带上，所以要先移出"""
         sel = "mcs_partfullname,mcs_consumptionquantity,_mcs_repairmaterialorderid_value,_mcs_partswriteoffdocid_value"
         p = self.browser.fetch_json(self.base, self._api(f"mcs_serviceparts({part_id})?$select={sel}"))
         name = p.get("mcs_partfullname") or "配件"
@@ -383,9 +384,9 @@ class D365:
         if not mid:
             raise RuntimeError(f"{name} 不在借料单上")
         m = self._material_live(mid)
-        if m.get("mcs_orderstatus") not in MAT_EDITABLE:
+        if m.get("mcs_orderstatus") not in (*MAT_EDITABLE, MAT_CANCELLED):
             raise RuntimeError(f"借料单 {m.get('mcs_code')} 当前是「{m.get('mcs_orderstatus' + FV) or m.get('mcs_orderstatus')}」，"
-                               "已提交的借料单不能移出配件")
+                               "已提交审批的借料单不能移出配件")
         if p.get("_mcs_partswriteoffdocid_value") or (p.get("mcs_consumptionquantity") or 0) > 0:
             raise RuntimeError(f"{name} 已有消耗或核销记录，不能移出")
         self._unlink_material(part_id)
@@ -678,6 +679,7 @@ PROGRESS_SELECT = ["mcs_serviceorderprocessingprogressid", "_mcs_serviceorder_va
 # mcs_repairmaterialorder.mcs_type：10 向事业部领料 · 20 向子公司借料 · 30 归还单 · 40 向子公司领料 · 50 向寄售库领料
 MAT_BORROW, MAT_RETURN = 20, 30
 MAT_EDITABLE = (10, 40)  # 已创建、已拒绝：还没提交，可以改借料单信息、移出配件
+MAT_CANCELLED = 60  # 已取消：D365 取消借料单后配件仍挂在单上，不算待申请，要移出才能重新申请
 # 借料单空着时的默认填法（英国：订单原因 紧急备件、出库方式 子公司出库、仓库 England Parts WH）
 MAT_DEFAULT_REASON = 803750001
 MAT_DEFAULT_OUTBOUND = 10

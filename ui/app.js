@@ -1061,13 +1061,14 @@ function addPartDialog(oid) {
 }
 
 // 申请借料：同 D365 工单上的「申请备件」。先检查（状态、超期未核销等）并核对收货信息，再生成借料单
-function applyDialog(oid) {
+// only：只预选这几个配件（如「重新申请」时只勾那一个），不给就全选
+function applyDialog(oid, only) {
   modal(`<h2>申请借料</h2><div id="aa-body"><div class="empty">正在检查…</div></div>
     <div class="actions"><button data-close>取消</button><button class="primary" id="aa-ok" disabled>申请借料</button></div>`, async (box, close) => {
     $('[data-close]', box).onclick = close;
     const c0 = await safe(() => api('apply_check', oid));
     if (!c0) { close(); return; }
-    const picked = new Set(c0.pending.map(p => p.id));  // 默认全选；重新检查后保留勾选
+    const picked = new Set(c0.pending.map(p => p.id).filter(id => !only || only.includes(id)));  // 默认全选；重新检查后保留勾选
     const opts = (list, cur) => '<option value="">不填</option>' + list.map(o => `<option value="${o.value}" ${o.value === cur ? 'selected' : ''}>${esc(o.label)}</option>`).join('');
     const render = c => {
     // 已经填的收货信息在重新检查后保留
@@ -1313,9 +1314,11 @@ async function loadOrderParts(oid, refresh) {
   // 加配件 / 申请借料：工单还没完工、没取消时可以（D365 会再按自己的规则检查一遍）
   const partsWritable = !PARTS_LOCKED.includes((S.curOrder || {}).d365_status_code) && !r.stale;
   const pending = r.parts.filter(p => !p.material_id);
-  // 借料单还没提交（已创建 / 已拒绝），配件没消耗、没核销：可以从借料单上移出
-  const releasable = p => { const m = r.materials.find(x => x.id === p.material_id);
-    return m && [10, 40].includes(m.status_code) && !p.writeoff_doc && !(p.consumption_qty > 0); };
+  // 借料单还没提交（已创建 / 已拒绝）或已取消，配件没消耗、没核销：可以从借料单上移出。
+  // D365 取消借料单后配件仍挂在已取消的单上，不算待申请，所以已取消的显示「重新申请」
+  const matOf = p => r.materials.find(x => x.id === p.material_id);
+  const releasable = p => { const m = matOf(p);
+    return m && [10, 40, 60].includes(m.status_code) && !p.writeoff_doc && !(p.consumption_qty > 0); };
   // 配件核销：同 D365，工单「服务完工」且不是服务代理商模式时才有按钮（能核销哪些由 D365 判断）
   const canWriteoff = (S.curOrder || {}).d365_status_code === 110 && !r.stale;
   // 「申请备件」生成的借料单订单类型可能还空着，也要能填写提交
@@ -1338,8 +1341,11 @@ async function loadOrderParts(oid, refresh) {
              <button class="link" data-save-cq hidden>保存</button>`}</td>
         <td class="${p.remaining_qty > 0 ? 'warn' : ''}">${qty(p.remaining_qty)}</td>
         <td>${p.is_charge ? '<span class="badge b-处理中">收费</span>' : '<span class="muted">否</span>'}</td>
-        <td class="nowrap">${esc(p.total_text)}</td><td class="mono small nowrap">${p.material_id ? esc(p.material_code) + (partsWritable && releasable(p)
-          ? ` <button class="link" data-release-part="${esc(p.id)}" title="借料单还没提交审批：把这个配件从借料单上移出，回到待申请">移出</button>` : '')
+        <td class="nowrap">${esc(p.total_text)}</td><td class="mono small nowrap">${p.material_id ? esc(p.material_code)
+          + ((matOf(p) || {}).status_code === 60 ? ' <span class="tag">借料单已取消</span>' : '') + (partsWritable && releasable(p)
+          ? ((matOf(p) || {}).status_code === 60
+            ? ` <button class="link" data-release-part="${esc(p.id)}" data-code="${esc(p.material_code)}" data-reapply title="借料单已取消：把配件放回待申请，再申请借料">重新申请</button>`
+            : ` <button class="link" data-release-part="${esc(p.id)}" data-code="${esc(p.material_code)}" title="借料单还没提交审批：把这个配件从借料单上移出，回到待申请">移出</button>`) : '')
           : `<span class="tag">待申请</span>${partsWritable ? ` <button class="link danger" data-del-part="${esc(p.id)}" title="从 D365 删除这条配件">删除</button>` : ''}`}</td></tr>`; }).join('') + '</tbody></table>' +
       '<div class="muted small">改「消耗」后点保存，直接写入 D365；剩余数量 = 确认 − 消耗，由 D365 重新计算。</div>'
       : '<div class="muted small">这单没有配件（或还没同步）</div>'}
@@ -1372,10 +1378,16 @@ async function loadOrderParts(oid, refresh) {
   box.onclick = async e => {
     if (e.target.dataset.phNo) { partInfoDialog(e.target.dataset.phNo, $('td div', e.target.closest('tr')).textContent); return; }
     if (e.target.dataset.releasePart) {
-      const tr = e.target.closest('tr'), name = $('td div', tr).textContent, code = e.target.parentElement.firstChild.textContent.trim();
-      if (!await ask(`把「${name}」从借料单 ${code} 上移出？\n配件会回到「待申请」，以后可以再申请；借料单上的其它配件不受影响。会写入 D365。`, '移出')) return;
-      const res = await safe(() => api('release_order_part', oid, e.target.dataset.releasePart));
-      if (res) { toast(`已从借料单移出：${res.released}（回到待申请）`); loadOrderParts(oid); }
+      const tr = e.target.closest('tr'), name = $('td div', tr).textContent, {code, releasePart: pid} = e.target.dataset;
+      const again = 'reapply' in e.target.dataset;
+      if (!await ask(again
+        ? `重新申请「${name}」？\n借料单 ${code} 已取消，配件还挂在那张单上。先把它放回「待申请」（写入 D365），然后打开申请借料，只勾选这个配件。`
+        : `把「${name}」从借料单 ${code} 上移出？\n配件会回到「待申请」，以后可以再申请；借料单上的其它配件不受影响。会写入 D365。`, again ? '重新申请' : '移出')) return;
+      const res = await safe(() => api('release_order_part', oid, pid));
+      if (!res) return;
+      await loadOrderParts(oid);
+      if (again) { toast(`${res.released} 已回到待申请`); applyDialog(oid, [pid]); }
+      else toast(`已从借料单移出：${res.released}（回到待申请）`);
       return;
     }
     if (e.target.dataset.delPart) {
