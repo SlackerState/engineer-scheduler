@@ -97,7 +97,7 @@ class Syncer:
         seen = {r["mcs_serviceorderid"] for r in recs}
         # 回看期之外、但本地还没完结的订单也刷新一下状态
         pending = [r["d365_id"] for r in self.db.q(
-            "SELECT d365_id FROM orders WHERE d365_id IS NOT NULL AND status NOT IN ('已完成','已取消')")
+            "SELECT d365_id FROM orders WHERE d365_id IS NOT NULL AND search_only=0 AND status NOT IN ('已完成','已取消')")
             if r["d365_id"] not in seen]
         if pending:
             recs += self.d365.by_ids(pending)
@@ -109,7 +109,7 @@ class Syncer:
             if network and row["network"] and row["network"] != network:
                 skipped += 1
                 continue
-            created = self.upsert(row, s)
+            created = self.upsert(row, s, promote=True)
             new += created
             upd += not created
             synced_ids.append(row["d365_id"])
@@ -169,7 +169,8 @@ class Syncer:
                         and m.get("type_code") == MAT_BORROW]
         return len(parts), len(mats)
 
-    def upsert(self, row: dict, s: dict) -> bool:
+    def upsert(self, row: dict, s: dict, search_only: bool = False, promote: bool = False) -> bool:
+        """search_only：新建时标记为只是查看；promote：已有的「只是查看」工单转为正式进订单清单。"""
         now = datetime.now().strftime("%Y-%m-%d %H:%M")
         cur = self.db.one("SELECT * FROM orders WHERE d365_id=?", (row["d365_id"],))
         if not cur and row["service_order_no"]:
@@ -177,13 +178,15 @@ class Syncer:
             cur = self.db.one("SELECT * FROM orders WHERE d365_id IS NULL AND service_order_no=?",
                               (row["service_order_no"],))
         if not cur:
-            cols = ["d365_id", *FILL_IF_EMPTY, "engineer", "status", *D365_COLUMNS, "synced_at"]
+            cols = ["d365_id", *FILL_IF_EMPTY, "engineer", "status", *D365_COLUMNS, "synced_at", "search_only"]
             vals = [row["d365_id"], *(row[c] for c in FILL_IF_EMPTY), row["engineer"],
-                    row["status"] or "待处理", *(row[c] for c in D365_COLUMNS), now]
+                    row["status"] or "待处理", *(row[c] for c in D365_COLUMNS), now, int(search_only)]
             self.db.x(f"INSERT INTO orders({','.join(cols)}) VALUES({','.join('?' * len(cols))})", vals)
             return True
         fields = {c: row[c] for c in D365_COLUMNS}
         fields.update(d365_id=row["d365_id"], synced_at=now)
+        if promote:
+            fields["search_only"] = 0
         for c in FILL_IF_EMPTY:
             if not cur.get(c) and row[c]:
                 fields[c] = row[c]
@@ -204,7 +207,7 @@ class Syncer:
     def place_order(self, o: dict, engineers: list[dict] | None = None):
         """工单 → 派单记录（每单一条）。上门时间按 实际到达 > 出发 > 本地计划；
         D365 的预约上门时间是考核截止，往往比实际晚很多天，不用来排班。时间变了会自动挪动。"""
-        if not o.get("d365_id"):
+        if not o.get("d365_id") or o.get("search_only"):
             return
         engineers = engineers if engineers is not None else self.db.engineers(include_inactive=True)
         key = f"so:{o['d365_id']}"

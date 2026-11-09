@@ -53,7 +53,8 @@ def borrow_state(mat: dict, remaining: float, order_status: str) -> str:
 def borrows(db: DB, order_d365_id: str | None = None) -> list[dict]:
     """所有借料单及其配件、剩余数量和归还状态。"""
     sql = ("SELECT m.*, o.id AS order_id, o.service_order_no, o.udesk_no, o.customer, o.engineer, o.serial, o.status AS order_status, "
-           "o.d365_status FROM material_orders m LEFT JOIN orders o ON o.d365_id = m.order_d365_id WHERE m.type_code = ?")
+           "o.d365_status FROM material_orders m LEFT JOIN orders o ON o.d365_id = m.order_d365_id "
+           "WHERE m.type_code = ? AND COALESCE(o.search_only, 0) = 0")
     params: list = [MAT_BORROW]
     if order_d365_id:
         sql += " AND m.order_d365_id = ?"
@@ -96,7 +97,7 @@ def charges(db: DB, day_from: str = "", day_to: str = "", engineer: str = "", on
     """配件明细（默认只看收费的），按工单创建日期筛选。"""
     sql = ("SELECT p.*, o.id AS order_id, o.day, o.service_order_no, o.udesk_no, o.customer, o.engineer, "
            "o.status AS order_status, o.d365_status FROM parts p LEFT JOIN orders o ON o.d365_id = p.order_d365_id "
-           "WHERE 1=1")
+           "WHERE COALESCE(o.search_only, 0) = 0")
     params: list = []
     if only_charge:
         sql += " AND p.is_charge = 1"

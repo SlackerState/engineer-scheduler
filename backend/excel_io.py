@@ -136,7 +136,7 @@ def export_workbook(db: DB, start: str, days: int) -> bytes:
             "超期风险", "设备地址", "联系人", "服务网点"]
     _header(ws, cols)
     s = db.settings()
-    for o in db.q("SELECT * FROM orders ORDER BY day DESC, id DESC"):
+    for o in db.q("SELECT * FROM orders WHERE search_only=0 ORDER BY day DESC, id DESC"):
         logic.enrich(o, s)
         plan = o["planned_day"] or ""
         ws.append([o["day"], o["udesk_no"], o["service_order_no"], o["loan_no"], o["customer"], o["serial"],

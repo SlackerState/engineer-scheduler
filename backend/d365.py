@@ -25,6 +25,11 @@ SELECT = [
     "_mcs_networkid_value", "mcs_warrantystatus", "mcs_faultlevel",
 ]
 
+# 查工单：机台号 / 服务订单号 / Udesk 工单号
+SEARCH_FIELDS = ("mcs_equipmentno", "mcs_ordernumber", "mcs_referencenumber")
+SEARCH_MIN_PARTIAL = 4  # 少于这么多字符不按包含查
+SEARCH_LIMIT = 200
+
 # mcs_orderstatus 选项值 → 本地「订单清单」状态
 STATUS_LOCAL = {10: "待处理", 15: "已取消"}
 STATUS_LOCAL.update({v: "已完成" for v in (100, 105, 110, 130, 140)})
@@ -585,8 +590,8 @@ class D365:
         return [normalize_material(r) for r in
                 self._by_orders("mcs_repairmaterialorders", MATERIAL_SELECT, "_mcs_serviceorderid_value", order_ids)]
 
-    def _query(self, flt: str, order: str = "createdon desc") -> list[dict]:
-        sel = ",".join(SELECT)
+    def _query(self, flt: str, order: str = "createdon desc", top: int = 0) -> list[dict]:
+        sel = ",".join(SELECT) + (f"&$top={top}" if top else "")
         return self.get_all(f"{ENTITY_SET}?$select={sel}&$filter={quote(flt)}&$orderby={quote(order)}")
 
     def list_orders(self, since: datetime, sources: list[int]) -> list[dict]:
@@ -605,6 +610,15 @@ class D365:
     def find(self, number: str) -> list[dict]:
         n = _q(number.strip())
         return self._query(f"mcs_ordernumber eq '{n}' or mcs_referencenumber eq '{n}'")
+
+    def search(self, keyword: str) -> tuple[list[dict], bool]:
+        """按机台号、服务订单号或 Udesk 工单号查全部来源的工单，返回（工单, 是否完全匹配）。
+        先完全匹配（约 1 秒）；没有才按包含查（要扫全表，约 7 秒），最多 SEARCH_LIMIT 单。"""
+        n = _q(keyword.strip())
+        rows = self._query(" or ".join(f"{k} eq '{n}'" for k in SEARCH_FIELDS))
+        if rows or len(n) < SEARCH_MIN_PARTIAL:
+            return rows, True
+        return self._query(" or ".join(f"contains({k},'{n}')" for k in SEARCH_FIELDS), top=SEARCH_LIMIT), False
 
     # ---------- 写入（规则与 D365 表单 mcs_serviceorder.js / dispatchuser.html 一致） ----------
     def _live(self, rid: str) -> dict:

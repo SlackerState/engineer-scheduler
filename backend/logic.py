@@ -137,9 +137,9 @@ def day_status(db: DB, day: str, slot: str = "") -> dict:
         })
     # 当天上门的工单（按实际到达 > 出发 > 本地计划；包括人员表以外的工程师）
     engs, s = db.engineers(), db.settings()
-    orders = db.q("SELECT * FROM orders WHERE substr(arrival_time, 1, 10)=? "
+    orders = db.q("SELECT * FROM orders WHERE search_only=0 AND (substr(arrival_time, 1, 10)=? "
                   "OR (COALESCE(arrival_time, '')='' AND substr(setoff_time, 1, 10)=?) "
-                  "OR (COALESCE(arrival_time, '')='' AND COALESCE(setoff_time, '')='' AND planned_day=?)",
+                  "OR (COALESCE(arrival_time, '')='' AND COALESCE(setoff_time, '')='' AND planned_day=?))",
                   (day, day, day))
     orders = [enrich(o, s) for o in orders]
     orders = [o for o in orders if o["visit"] and o["visit"]["day"] == day]

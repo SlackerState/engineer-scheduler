@@ -68,6 +68,10 @@ table.grid { border-collapse: collapse; width: 100%; }
 #p-table { min-width: 860px; }
 .grid td.nowrap { white-space: nowrap; }
 .grid input, .grid select { width: 100%; padding: 4px 6px; }
+#f-out { overflow: auto; min-height: 0; flex: 1; }
+.search-group { margin-bottom: 14px; }
+.search-group > .row { margin-bottom: 6px; }
+.search-group .table-wrap { min-height: 0; }
 .empty { padding: 30px; text-align: center; color: var(--muted); }
 .mono { font-family: ui-monospace, Menlo, Consolas, monospace; font-size: 12px; }
 

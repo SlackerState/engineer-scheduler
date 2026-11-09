@@ -1,6 +1,7 @@
 """界面调用的接口。桌面窗口里经 pywebview 的 js_api 调用，网页模式下经 server.py 的 /api/<方法名> 调用。"""
 from __future__ import annotations
 
+import functools
 import base64
 import json
 import threading
@@ -23,6 +24,16 @@ RISK_OPEN = ("overdue", "soon", "plan_late")
 AUTO_REFRESH_GAP = 60  # 秒
 # 打开详情时从 D365 刷新，这些字段变了就重新显示详情
 ORDER_LIVE_KEYS = ("engineer", "status", *D365_COLUMNS)
+
+
+def _keeps_order(fn):
+    """写 D365 的接口：成功后这单算正式工单。在「查工单」打开的单上做了操作就是在处理它，要能在清单里跟踪（比如借料归还）。"""
+    @functools.wraps(fn)
+    def wrap(self, oid, *a, **k):
+        result = fn(self, oid, *a, **k)
+        self._promote(int(oid))
+        return result
+    return wrap
 
 
 class Api:
@@ -163,7 +174,7 @@ class Api:
         return rows
 
     def list_orders(self, status="", keyword="", engineer=""):
-        sql, p = "SELECT * FROM orders WHERE 1=1", []
+        sql, p = "SELECT * FROM orders WHERE search_only=0", []
         if status in ("未完成", "超期风险", "待排期"):
             sql += " AND status NOT IN ('已完成','已取消')"
         elif status and status != "待归还配件":
@@ -199,7 +210,7 @@ class Api:
         """设置本地计划上门时间（day 为空 = 清除），并同步派单和排班。只存软件里，不写 D365。"""
         if day and slot not in SLOTS:
             slot = "上午"
-        self._db.update_order(int(oid), {"planned_day": day or "", "planned_slot": slot if day else ""})
+        self._db.update_order(int(oid), {"planned_day": day or "", "planned_slot": slot if day else "", "search_only": 0})
         o = self._db.one("SELECT * FROM orders WHERE id=?", (int(oid),))
         self._sync.place_order(o)
         return self.get_order(oid)
@@ -242,6 +253,7 @@ class Api:
         self._mat_link(res["materials"])
         return res
 
+    @_keeps_order
     def set_part_consumption(self, oid, part_id, qty):
         """把配件消耗数量写回 D365，然后重新读取这一单的配件（剩余数量由 D365 重算）。"""
         try:
@@ -299,6 +311,7 @@ class Api:
         except NeedLogin as e:
             raise RuntimeError(str(e)) from e
 
+    @_keeps_order
     def add_order_parts(self, oid, items):
         """一次加多个配件：items = [{part: {id, no, name}（来自 search_parts）, qty}]。"""
         o = self._d365_order(oid)
@@ -308,6 +321,7 @@ class Api:
             self._sync.sync_parts([o["d365_id"]])
         return {**self.order_parts(oid), **r}
 
+    @_keeps_order
     def delete_order_part(self, oid, part_id):
         o = self._d365_order(oid)
         name = self._d365_call(self._d365.delete_part, part_id)
@@ -318,6 +332,7 @@ class Api:
         o = self._d365_order(oid)
         return self._d365_call(self._d365.apply_check, o["d365_id"])
 
+    @_keeps_order
     def set_existfault(self, oid, data=None):
         """申请借料时把工单改为「存在故障」，写回 D365 后重新检查。"""
         o = self._d365_order(oid)
@@ -326,6 +341,7 @@ class Api:
         self._refresh_from_d365([o["d365_id"]])
         return self._d365_call(self._d365.apply_check, o["d365_id"])
 
+    @_keeps_order
     def apply_parts(self, oid, receiver=None, part_ids=None):
         """申请借料：收货信息有改动时先写回工单，再调 D365「申请备件」，返回新借料单。
         part_ids：只申请勾选的待申请配件，没勾的申请后从借料单上移出（见 D365.apply_parts）。"""
@@ -346,6 +362,7 @@ class Api:
         return {**res, "material": mat or {"id": mid, "code": ""}, "released": r["released"],
                 "release_failed": r["release_failed"]}
 
+    @_keeps_order
     def release_order_part(self, oid, part_id):
         """把配件从还没提交的借料单上移出，回到待申请。"""
         o = self._d365_order(oid)
@@ -361,6 +378,7 @@ class Api:
         self._d365_order(oid)
         return self._d365_call(self._d365.material_form, mid)
 
+    @_keeps_order
     def save_material(self, oid, mid, data):
         o = self._d365_order(oid)
         r = self._d365_call(self._d365.save_material, mid, data or {})
@@ -371,12 +389,14 @@ class Api:
         o = self._d365_order(oid)
         return self._d365_call(self._d365.writeoff_list, o["d365_id"])
 
+    @_keeps_order
     def writeoff_parts(self, oid, part_ids, kind=1):
         o = self._d365_order(oid)
         n = self._d365_call(self._d365.writeoff, o["d365_id"], list(part_ids or []), int(kind))
         self._sync.sync_parts([o["d365_id"]])
         return {**self.order_parts(oid), "written_off": n}
 
+    @_keeps_order
     def submit_material(self, oid, mid):
         o = self._d365_order(oid)
         code = self._d365_call(self._d365.submit_material, mid)
@@ -411,7 +431,7 @@ class Api:
 
     def orders_since(self, day, status=""):
         """创建日期在 day 及之后的工单，按创建时间倒序。"""
-        sql, p = "SELECT * FROM orders WHERE day >= ?", [day]
+        sql, p = "SELECT * FROM orders WHERE search_only=0 AND day >= ?", [day]
         if status == "未完成":
             sql += " AND status NOT IN ('已完成','已取消')"
         elif status:
@@ -486,16 +506,35 @@ class Api:
         except Exception as e:  # noqa: BLE001
             return {"ok": False, "message": str(e)}
 
-    def find_d365(self, number):
+    def search_d365(self, keyword):
+        """查工单：按机台号、服务订单号或 Udesk 工单号直接查 D365（全部来源、不限时间、不限网点）。只读，不写本地。"""
+        keyword = (keyword or "").strip()
+        if not keyword:
+            return {"ok": True, "rows": [], "exact": True}
         try:
-            rows = [normalize(r) for r in self._d365.find(number)]
+            recs, exact = self._d365.search(keyword)
         except NeedLogin as e:
             return {"ok": False, "need_login": True, "message": str(e)}
+        rows = [normalize(r) for r in recs]
         for r in rows:
             r.pop("d365_json", None)
-            r["d365_link"] = self._d365.record_url(r["d365_id"])
-            r["exists"] = bool(self._db.one("SELECT id FROM orders WHERE d365_id=?", (r["d365_id"],)))
-        return {"ok": True, "rows": rows}
+            o = self._db.one("SELECT search_only FROM orders WHERE d365_id=?", (r["d365_id"],))
+            r["in_list"] = bool(o) and not o["search_only"]
+        return {"ok": True, "rows": rows, "exact": exact}
+
+    def open_d365_order(self, d365_id):
+        """打开查工单的结果：存一条本地记录（详情页的读取和操作都按本地工单走），返回本地 id。
+        还不在订单清单里的只标记为查看，不进清单、排班和统计。"""
+        recs = self._d365_call(self._d365.by_ids, [d365_id])
+        if not recs:
+            raise ValueError("D365 里没有找到这张工单")
+        self._sync.upsert(normalize(recs[0]), self._db.settings(), search_only=True)
+        return self._db.one("SELECT id FROM orders WHERE d365_id=?", (d365_id,))["id"]
+
+    def keep_order(self, oid):
+        """把查工单打开的工单加入订单清单（也进排班和统计）。"""
+        self._promote(int(oid))
+        return self.get_order(oid)
 
     def add_from_d365(self, number):
         recs = self._d365.find(number)
@@ -503,7 +542,7 @@ class Api:
         s = self._db.settings()
         for rec in recs:
             row = normalize(rec)
-            self._sync.upsert(row, s)
+            self._sync.upsert(row, s, promote=True)
             if s.get("d365_to_dispatch", True):
                 self._sync.sync_dispatch(row, engineers)
         return len(recs)
@@ -543,6 +582,15 @@ class Api:
             raise ValueError("这条订单不是从 D365 同步来的，无法写回 D365")
         return o
 
+    def _promote(self, oid: int):
+        """这单转为正式工单：进订单清单、排班和统计。"""
+        o = self._db.one("SELECT * FROM orders WHERE id=?", (oid,))
+        if o and o["search_only"]:
+            self._db.update_order(oid, {"search_only": 0})
+            o["search_only"] = 0
+            if self._db.settings().get("d365_to_dispatch", True):
+                self._sync.place_order(o)
+
     def _refresh_from_d365(self, d365_ids: list[str]):
         """写入后立即从 D365 读回最新数据，并同步派单记录和排班表。"""
         s, engineers = self._db.settings(), self._db.engineers(include_inactive=True)
@@ -570,6 +618,7 @@ class Api:
                 verb = self._d365.assign_engineer(o["d365_id"], person_id)
                 results.append({"id": o["id"], "no": o["service_order_no"], "ok": True, "message": f"已{verb}给 {person_name}"})
                 done.append(o["d365_id"])
+                self._promote(o["id"])
             except NeedLogin:
                 raise
             except Exception as e:  # noqa: BLE001 - 单张失败不影响其它
@@ -578,6 +627,7 @@ class Api:
             self._refresh_from_d365(done)
         return results
 
+    @_keeps_order
     def d365_set_appointment(self, oid, value):
         """value 形如 '2026-10-28T09:30'（本机时间）。"""
         o = self._d365_order(oid)

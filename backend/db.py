@@ -124,6 +124,7 @@ CREATE TABLE IF NOT EXISTS orders (
     synced_at TEXT DEFAULT '',
     planned_day TEXT DEFAULT '',   -- 调度员定的实际计划上门日期（只存本地）
     planned_slot TEXT DEFAULT '',
+    search_only INTEGER NOT NULL DEFAULT 0,  -- 只是从「查工单」打开看的：不进订单清单、排班、工作量和配件统计
     created_at TEXT DEFAULT (datetime('now', 'localtime')),
     updated_at TEXT DEFAULT (datetime('now', 'localtime'))
 );
@@ -228,6 +229,8 @@ class DB:
             for name in ("planned_day", "planned_slot"):
                 if name not in cols:
                     self.conn.execute(f"ALTER TABLE orders ADD COLUMN {name} TEXT DEFAULT ''")
+            if "search_only" not in cols:
+                self.conn.execute("ALTER TABLE orders ADD COLUMN search_only INTEGER NOT NULL DEFAULT 0")
             cols = {r[1] for r in self.conn.execute("PRAGMA table_info(parts)")}
             for name, ddl in (("consumption_qty", "REAL DEFAULT 0"), ("writeoff_doc", "TEXT DEFAULT ''"),
                               ("return_order", "TEXT DEFAULT ''")):

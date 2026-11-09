@@ -14,6 +14,7 @@
   <button id="btn-update" class="update-pill" hidden></button>
   <nav id="nav">
     <a data-view="orders" class="on">订单清单</a>
+    <a data-view="search">查工单</a>
     <a data-view="schedule">排班表</a>
     <a data-view="workload">工作量</a>
     <a data-view="today">今日查询</a>
@@ -42,12 +43,22 @@
       <select id="o-eng"><option value="">全部工程师</option></select>
       <input id="o-kw" type="search" placeholder="搜索订单号 / SVC / 客户 / 序列号 / 问题">
       <button id="o-batch" class="primary" hidden>批量改派</button>
-      <button id="o-find">查 D365 订单</button>
       <button id="o-udesk">新建服务订单（Udesk）</button>
       <button id="o-new">手工新增</button>
     </div>
   </header>
   <div class="table-wrap"><table class="grid" id="o-table"></table></div>
+</section>
+
+<section id="v-search" class="view">
+  <header class="bar">
+    <h1>查工单</h1>
+    <div class="tools">
+      <input id="f-kw" type="search" placeholder="机台号 / 服务单号 / SVC 号，部分也可以" style="width:320px">
+      <button id="f-go" class="primary">查询</button>
+    </div>
+  </header>
+  <div id="f-out"></div>
 </section>
 
 <section id="v-schedule" class="view">

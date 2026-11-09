@@ -43,9 +43,9 @@ def _key(engs: list[dict], name: str) -> tuple[str, dict | None]:
 def _orders(db: DB, days: list[str]) -> list[dict]:
     """上门或完工落在这段时间里的工单，附上排班口径的上门时间、超期、现场工时和配件。"""
     a, b = days[0], days[-1]
-    rows = db.q("SELECT * FROM orders WHERE (substr(arrival_time,1,10) BETWEEN ?1 AND ?2) "
+    rows = db.q("SELECT * FROM orders WHERE search_only=0 AND ((substr(arrival_time,1,10) BETWEEN ?1 AND ?2) "
                 "OR (substr(setoff_time,1,10) BETWEEN ?1 AND ?2) OR (planned_day BETWEEN ?1 AND ?2) "
-                "OR (substr(complete_time,1,10) BETWEEN ?1 AND ?2)", (a, b))
+                "OR (substr(complete_time,1,10) BETWEEN ?1 AND ?2))", (a, b))
     s = db.settings()
     parts = {}
     ids = [o["d365_id"] for o in rows if o["d365_id"]]

@@ -111,7 +111,7 @@ function show(view) {
   S.view = view;
   $$('#nav a').forEach(a => a.classList.toggle('on', a.dataset.view === view));
   $$('.view').forEach(v => v.classList.toggle('on', v.id === 'v-' + view));
-  ({orders: loadOrders, schedule: loadSchedule, workload: loadWorkload, today: loadToday, parts: loadParts,
+  ({orders: loadOrders, search: loadSearch, schedule: loadSchedule, workload: loadWorkload, today: loadToday, parts: loadParts,
     people: loadPeople, settings: loadSettings})[view]();
 }
 
@@ -123,12 +123,20 @@ const deadlineHtml = o => o.appointment
 
 // ======================= 订单清单 =======================
 async function loadOrders() {
+  if (S.view === 'search') return S.search && runSearch();  // 在查工单页打开的详情里改了东西：刷新查询结果
   const rows = await safe(() => api('list_orders', $('#o-status').value, $('#o-kw').value.trim(), $('#o-eng').value));
   if (!rows) return;
   const t = $('#o-table');
   S.selected = new Set();
   updateBatch();
-  if (!rows.length) { t.innerHTML = '<tr><td class="empty">没有订单。点左下「同步 D365」拉取 Udesk 创建的订单。</td></tr>'; return; }
+  if (!rows.length) {
+    const kw = $('#o-kw').value.trim();
+    t.innerHTML = kw
+      ? `<tr><td class="empty">订单清单里没有「${esc(kw)}」。 <button class="link" id="o-to-search">到 D365 查这个号码</button></td></tr>`
+      : '<tr><td class="empty">没有订单。点左下「同步 D365」拉取 Udesk 创建的订单。</td></tr>';
+    if (kw) $('#o-to-search').onclick = () => { $('#f-kw').value = kw; show('search'); runSearch(); };
+    return;
+  }
   t.innerHTML = `<thead><tr><th class="ck"><input type="checkbox" id="o-all" title="全选可改派的订单"></th><th>日期</th><th>Udesk 工单号</th><th>服务订单号</th><th>客户</th><th>机器序列号</th>
     <th>问题</th><th>工程师</th><th>状态</th><th>D365 状态</th><th>上门</th><th>预约截止</th><th>超期</th><th>处理进度</th></tr></thead><tbody>` +
     rows.map(o => `<tr class="click" data-id="${o.id}">
@@ -323,6 +331,7 @@ async function openOrder(id) {
     <h2>${o.id ? '订单 ' + esc(o.service_order_no || o.udesk_no || '#' + o.id) : '手工新增订单'}
       ${o.d365_link ? '<button class="link" id="od-open">在 D365 打开 ↗</button>' : ''}
       <button class="x" id="od-close">关闭</button></h2>
+    ${o.search_only ? '<div class="check warn-box row"><span>这单是从「查工单」打开的，没有进订单清单、排班和统计。在这单上做了 D365 操作后会自动加入。</span><button id="od-keep" style="margin-left:auto">加入订单清单</button></div>' : ''}
     ${fromD365 ? d365ActionsHtml(o) + visitPlanHtml(o) +
       '<div class="card act progress"><div class="row"><b>处理进度</b><span class="muted small">工程师在 D365 / App 里填写，随同步更新</span></div><div id="od-progress"><div class="muted small">读取中…</div></div></div>' +
       '<div class="card act parts"><b>配件</b><div id="od-parts"></div></div>' : ''}
@@ -344,6 +353,7 @@ async function openOrder(id) {
       `<dt>${l}</dt><dd>${esc(o[k]) || '<span class="muted">—</span>'}</dd>`).join('')}</dl>` : ''}`;
   d.hidden = false;
   $('#od-close').onclick = () => (d.hidden = true);
+  if (o.search_only) $('#od-keep').onclick = () => safe(async () => { await api('keep_order', o.id); toast('已加入订单清单'); loadOrders(); openOrder(o.id); });
   if ($('#od-open')) $('#od-open').onclick = () => api('open_url', o.d365_link);
   S.curOrder = o;
   $('#od-form').addEventListener('input', () => { $('#od-form').dataset.dirty = '1'; });
@@ -378,38 +388,52 @@ async function openOrder(id) {
   };
 }
 
-function findD365() {
-  modal(`<h2>按订单号查询 D365</h2>
-    <div class="row"><input id="fd-no" placeholder="服务订单号（如 2610028417）或 Udesk 工单号（如 SVC-59137）" style="flex:1">
-      <button class="primary" id="fd-go">查询</button></div>
-    <div id="fd-out"></div><div class="actions"><button data-close>关闭</button></div>`, (box, close) => {
-    $('[data-close]', box).onclick = close;
-    const go = async () => {
-      const no = $('#fd-no', box).value.trim(); if (!no) return;
-      $('#fd-out', box).innerHTML = '<div class="muted">查询中…</div>';
-      const r = await safe(() => api('find_d365', no));
-      if (!r) { $('#fd-out', box).innerHTML = ''; return; }
-      if (!r.ok) { $('#fd-out', box).innerHTML = `<div class="check"><span class="bad">${esc(r.message)}</span>，请先到「设置」登录 D365。</div>`; return; }
-      if (!r.rows.length) { $('#fd-out', box).innerHTML = '<div class="check">D365 里没有找到这个订单号。</div>'; return; }
-      $('#fd-out', box).innerHTML = r.rows.map(x => `<div class="card" style="margin-top:8px">
-        <div class="row"><b class="mono">${esc(x.service_order_no)}</b><span class="mono muted">${esc(x.udesk_no)}</span>
-          <span class="badge b-${esc(x.status)}">${esc(x.d365_status)}</span><span class="tag">${esc(x.order_type)}</span>
-          <span style="margin-left:auto"></span><button class="link" data-open="${esc(x.d365_link)}">D365 ↗</button>
-          <button class="primary" data-add="${esc(x.service_order_no)}">${x.exists ? '更新到订单清单' : '加入订单清单'}</button></div>
-        <dl class="kv"><dt>客户</dt><dd>${esc(x.customer)}</dd><dt>工程师</dt><dd>${esc(x.engineer) || '—'}</dd>
-          <dt>设备</dt><dd>${esc(x.serial)} ${esc(x.model)}</dd><dt>问题</dt><dd>${esc(x.problem)}</dd>
-          <dt>预约上门</dt><dd>${esc(x.appointment) || '—'}</dd><dt>出发/到达</dt><dd>${esc(x.setoff_time) || '—'} / ${esc(x.arrival_time) || '—'}</dd>
-          <dt>现场完工</dt><dd>${esc(x.complete_time) || '—'}</dd><dt>地址</dt><dd>${esc(x.address)}</dd>
-          <dt>服务网点</dt><dd>${esc(x.network)}</dd></dl></div>`).join('');
-      $$('[data-open]', box).forEach(b => (b.onclick = () => api('open_url', b.dataset.open)));
-      $$('[data-add]', box).forEach(b => (b.onclick = () => safe(async () => {
-        await api('add_from_d365', b.dataset.add); toast('已加入订单清单'); close(); loadOrders();
-      })));
-    };
-    $('#fd-go', box).onclick = go;
-    $('#fd-no', box).onkeydown = e => { if (e.key === 'Enter') go(); };
-    $('#fd-no', box).focus();
-  });
+// ======================= 查工单 =======================
+// 按机台号或任意服务单号直接查 D365（全部来源、不限时间），按机台分组；点一行打开和订单清单一样的详情
+const SEARCH_HINT = '<div class="empty">输入机台号，看这台机下面所有服务单；也可以输入任意服务单号或 SVC 号。<br>直接查 D365，不限来源和时间，不用先同步。</div>';
+
+function loadSearch() {
+  if (!S.search) $('#f-out').innerHTML = SEARCH_HINT;
+  if (document.activeElement === document.body) $('#f-kw').focus();
+}
+
+async function runSearch() {
+  const kw = $('#f-kw').value.trim();
+  const out = $('#f-out');
+  if (!kw) { S.search = null; out.innerHTML = SEARCH_HINT; return; }
+  const token = S.searchToken = (S.searchToken || 0) + 1;
+  if (!S.search || S.search.kw !== kw) out.innerHTML = '<div class="empty">正在查 D365…（没有完全相同的号码时会按部分号码查，要等几秒）</div>';
+  const r = await safe(() => api('search_d365', kw));
+  if (token !== S.searchToken) return;
+  if (!r) { S.search = null; out.innerHTML = ''; return; }
+  if (!r.ok) { S.search = null; out.innerHTML = `<div class="check"><span class="bad">${esc(r.message)}</span>，请先点左下「同步 D365」登录。</div>`; return; }
+  S.search = {kw, ...r};
+  renderSearch();
+}
+
+function renderSearch() {
+  const out = $('#f-out'), {kw, rows, exact} = S.search;
+  if (!rows.length) { out.innerHTML = `<div class="empty">D365 里没有找到「${esc(kw)}」。</div>`; return; }
+  const groups = new Map();
+  rows.forEach(o => { const k = o.serial || '（没有机台号）'; groups.has(k) ? groups.get(k).push(o) : groups.set(k, [o]); });
+  const open = o => !['已完成', '已取消'].includes(o.status);
+  out.innerHTML = (exact ? '' : `<div class="muted small" style="margin:0 0 8px">没有完全相同的号码，下面是包含「${esc(kw)}」的结果${rows.length >= 200 ? '（只显示最新 200 单，请输入更完整的号码）' : ''}。</div>`) +
+    [...groups].map(([serial, list]) => `<div class="search-group">
+      <div class="row"><b class="mono">${esc(serial)}</b><span class="muted">${esc(list[0].model)}</span>
+        <span class="muted small">共 ${list.length} 单${list.some(open) ? `，<b>未完成 ${list.filter(open).length} 单</b>` : ''}</span></div>
+      <div class="table-wrap"><table class="grid"><thead><tr><th>日期</th><th>服务单号</th><th>Udesk 工单号</th><th>来源</th><th>客户</th><th>问题</th><th>工程师</th><th>D365 状态</th><th>现场完工</th><th>服务网点</th></tr></thead><tbody>` +
+      list.map(o => `<tr class="click" data-d365="${esc(o.d365_id)}">
+        <td class="nowrap">${esc(o.day)}</td>
+        <td class="nowrap mono">${esc(o.service_order_no)}${o.order_type ? `<span class="tag">${esc(o.order_type)}</span>` : ''}${o.in_list ? '<span class="tag">在清单</span>' : ''}</td>
+        <td class="nowrap mono">${esc(o.udesk_no)}</td><td class="nowrap">${esc(o.source)}</td><td>${esc(o.customer)}</td>
+        <td class="wrap">${esc((o.problem || '').slice(0, 140))}</td><td class="nowrap">${esc(o.engineer)}</td>
+        <td class="nowrap"><span class="badge b-${esc(o.status)}">${esc(o.d365_status)}</span></td>
+        <td class="nowrap">${esc(o.complete_time)}</td><td class="nowrap">${esc(o.network)}</td></tr>`).join('') +
+      '</tbody></table></div></div>').join('');
+  $$('[data-d365]', out).forEach(tr => (tr.onclick = async () => {
+    const id = await safe(() => api('open_d365_order', tr.dataset.d365));
+    if (id) openOrder(id);
+  }));
 }
 
 // ======================= 排班表 =======================
@@ -1732,7 +1756,8 @@ async function init() {
   };
   $('#o-batch').onclick = () => assignDialog([...S.selected], loadOrders);
   $('#o-udesk').onclick = () => createOrderDialog();
-  $('#o-find').onclick = findD365;
+  $('#f-go').onclick = runSearch;
+  $('#f-kw').onkeydown = e => { if (e.key === 'Enter') runSearch(); };
   $('#o-new').onclick = () => openOrder(null);
 
   // 排班
