@@ -663,7 +663,7 @@ async function loadBorrows() {
     <th>借料时间</th><th>配件（剩余 / 借出）</th><th>归还单</th><th>工单状态</th></tr></thead><tbody>` + r.rows.map(b => `
     <tr class="click" ${b.order_id ? `data-order="${b.order_id}"` : ''}>
       <td>${stateBadge(b.state)}</td>
-      <td class="mono nowrap"><a class="lnk" data-link="${esc(b.d365_link)}">${esc(b.code)} ↗</a><div class="muted small">${esc(b.status)}</div>${erpHtml(b)}</td>
+      <td class="mono nowrap"><a class="lnk" data-link="${esc(b.d365_link)}">${esc(b.code)} ↗</a><div class="muted small">${esc(b.status)}${shipHtml(b)}</div>${erpHtml(b)}</td>
       <td class="mono nowrap">${esc(b.service_order_no || '')}<div class="muted small">${esc(b.udesk_no || '')}</div></td>
       <td>${esc(b.customer || '')}</td><td class="nowrap">${esc(b.engineer || '')}</td>
       <td class="nowrap">${esc((b.created || '').slice(0, 10))}${b.days != null ? `<div class="muted small">${b.days} 天前</div>` : ''}</td>
@@ -694,6 +694,9 @@ async function loadCharges() {
 
 // 借料邮件：借料单审批通过、拿到 ERP 号后，生成发给仓库的邮件（每位工程师一封），复制后粘贴到邮件里
 const hasErp = b => b.sap_number && b.status_code !== 60;
+// 借料单发货状态（D365「发货状态」：Not Shipped / Partially Shipped / Shipped）。还没审批通过或已取消的单不显示
+const shipHtml = b => !b.shipment || [10, 20, 40, 60].includes(b.status_code) ? ''
+  : `<span class="tag ship-${/^(shipped|已发货)$/i.test(b.shipment) ? 'ok' : 'wait'}" title="D365 发货状态">${esc(b.shipment)}</span>`;
 
 function borrowEmailText(eng, list) {
   return `Hi Team,\n\nPlease can you give these to ${eng}\n` +
@@ -1375,7 +1378,7 @@ async function loadOrderParts(oid, refresh) {
       : '<div class="muted small">这单没有配件（或还没同步）</div>'}
     ${r.borrows.length ? `<div class="sec small row">借料归还${r.borrows.some(hasErp)
       ? '<button id="od-borrow-email" style="margin-left:auto" title="借料单已拿到 ERP 号，生成发给仓库的邮件">借料邮件</button>' : ''}</div>` + r.borrows.map(b => `<div class="row">${stateBadge(b.state)}
-      <a class="lnk mono" data-open="${esc((r.materials.find(m => m.id === b.id) || {}).d365_link || '')}">${esc(b.code)} ↗</a>
+      <a class="lnk mono" data-open="${esc((r.materials.find(m => m.id === b.id) || {}).d365_link || '')}">${esc(b.code)} ↗</a>${shipHtml(b)}
       <span class="muted small">剩余 ${qty(b.remaining)} 件 · ${esc(b.return_status || '')}${b.returns.length ? ' · 归还单 ' + b.returns.map(x => esc(x.code) + '（' + esc(x.status) + '）').join('、') : ''}</span>${erpHtml(b)}</div>`).join('') : ''}
     ${(r.writeoffs || []).length ? '<div class="sec small">核销单</div>' + r.writeoffs.map(w => `<div class="row">
       <span class="badge bs-已用完">${esc(w.type || '核销')}</span><span class="mono">${esc(w.code)}</span>

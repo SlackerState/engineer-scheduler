@@ -171,6 +171,8 @@ td.st-blank { color: var(--muted); }
 .job .row { gap: 6px; }
 .job .clip { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .tag.slot { margin-left: 0; color: var(--accent); border-color: #cfdcf3; }
+.tag.ship-ok { color: var(--good); border-color: #bfe3c6; }
+.tag.ship-wait { color: var(--warn); border-color: #f3d3a5; }
 .job-empty { padding: 6px 0; }
 
 /* 卡片与表单 */
