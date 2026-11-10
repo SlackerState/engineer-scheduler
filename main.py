@@ -113,7 +113,8 @@ def _version() -> str:
 def run_webview(api, ui: Path):
     import webview
     window = webview.create_window("工单工作台", str(ui / "index.html"), js_api=api,
-                                   width=1400, height=880, min_size=(1000, 640))
+                                   width=1400, height=880, min_size=(1000, 640),
+                                   text_select=True)  # pywebview 默认禁止选中文字（Mac 上就不能复制）
     api._window = window
     try:
         webview.start()
