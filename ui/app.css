@@ -56,6 +56,8 @@ main { flex: 1; min-width: 0; overflow: hidden; }
 .note { margin: 0 0 10px; max-width: 900px; line-height: 1.6; }
 .table-wrap { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; overflow: auto; min-height: 120px; }
 #v-orders .table-wrap, #v-schedule .table-wrap { flex: 1; }
+/* 今日查询上面有统计卡片，两个表格不能被压到最小高度：内容少就全部展开、页面整体滚动，内容多时最高占窗口 80%、在表格里滚 */
+#v-today .table-wrap { flex: none; max-height: 80vh; }
 
 table.grid { border-collapse: collapse; width: 100%; }
 .grid th, .grid td { padding: 7px 9px; border-bottom: 1px solid var(--line); text-align: left; vertical-align: top; }
