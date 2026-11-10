@@ -809,7 +809,9 @@ async function stockSummary(el, no) {
 // 一个配件的英国仓库存（iWMS）和图片（SIS），显示在 el 里。弹窗和「配件 → 查库存/图片」共用
 function partInfo(el, no) {
   el.innerHTML = `<div class="sec small">英国仓库存 <span class="muted">· iWMS</span></div><div data-pi-stock></div>
+    <div class="sec small">替代件 <span class="muted">· SIS</span></div><div data-pi-repl></div>
     <div class="sec small">图片 <span class="muted">· SIS</span></div><div data-pi-ph></div>`;
+  const sisAgain = () => { loadRepl(); loadPhotos(); };  // SIS 登录后替代件和图片一起重查
   const loadStock = async () => {
     const box = $('[data-pi-stock]', el);
     box.innerHTML = '<div class="empty">正在查 iWMS…</div>';
@@ -825,7 +827,7 @@ function partInfo(el, no) {
     const r = await safe(() => api('part_photos', no));
     if (!body.isConnected) return;
     if (!r) { body.innerHTML = '<div class="empty">没查到，稍后再试</div>'; return; }
-    if (r.need_login) { loginPrompt(body, 'SIS', 'sis_login', 'SIS 登录 12 小时有效', loadPhotos); return; }
+    if (r.need_login) { loginPrompt(body, 'SIS', 'sis_login', 'SIS 登录 12 小时有效', sisAgain); return; }
     if (!r.photos.length) { body.innerHTML = '<div class="empty">SIS 里这个配件没有图片</div>'; return; }
     let cur = 0;
     body.innerHTML = `<div class="ph-big" title="点击放大查看"><img class="ph-img" alt="${esc(no)}"></div>
@@ -846,8 +848,40 @@ function partInfo(el, no) {
     $('[data-ph-open]', body).onclick = () => api('open_url', r.photos[cur].full);
     show(0);
   };
+  const loadRepl = async () => {
+    const box = $('[data-pi-repl]', el);
+    box.innerHTML = '<div class="empty">正在查 SIS 替代件…</div>';
+    const r = await safe(() => api('part_replacements', no));
+    if (!box.isConnected) return;
+    if (!r) { box.innerHTML = '<div class="empty">没查到，稍后再试</div>'; return; }
+    if (r.need_login) { loginPrompt(box, 'SIS', 'sis_login', 'SIS 登录 12 小时有效', sisAgain); return; }
+    replHtml(box, r.rows);
+  };
   loadStock();
+  loadRepl();
   loadPhotos();
+}
+
+// 替代件：每组写明替代成哪个物料号、数量、关系、方向、是否强制、适用的主机 / 产品组；每个替代件下面查英格兰配件库库存，
+// 点物料号看它的完整库存和图片。名称 SIS 只有中文，D365 有英文名时一起显示
+const REPL_DIR = {单向: '单向：可以用替代件代替这个配件，反过来不行', 双向: '双向：两个配件可以互相代替'};
+function replHtml(box, rows) {
+  if (!rows.length) { box.innerHTML = '<div class="muted">SIS 里这个配件没有替代件</div>'; return; }
+  const nos = [...new Set(rows.flatMap(g => g.parts.map(x => x.no)))];
+  box.innerHTML = rows.map(g => `<div class="repl">
+    ${g.parts.map(x => `<div class="row"><button class="link mono" data-repl-no="${esc(x.no)}" data-name="${esc(x.name)}" title="看这个替代件的库存和图片">${esc(x.no)}</button>
+      <span>${esc(x.name)}<span class="muted" data-repl-en="${esc(x.no)}"></span></span>${x.qty && x.qty !== '1' ? `<b>× ${esc(x.qty)}</b>` : ''}</div>`).join('')}
+    <div class="row small"><span class="tag" style="margin:0">${esc(g.relation || '替换')}</span>
+      ${g.direction ? `<span class="tag" title="${esc(REPL_DIR[g.direction] || '')}">${esc(g.direction)}</span>` : ''}
+      ${g.forced ? '<span class="tag ship-wait" title="SIS 标为强制替代">强制替代</span>' : ''}
+      <span class="muted" title="${esc(g.machines.join('\n'))}">${esc(g.scope.join(' / '))}${g.machines.length ? '：' + esc(g.machines.slice(0, 2).join('、'))
+        + (g.machines.length > 2 ? ` 等 ${g.machines.length} 个` : '') : ''}</span></div>
+    ${g.parts.map(x => `<div data-repl-stock="${esc(x.no)}"></div>`).join('')}</div>`).join('');
+  box.onclick = e => { const b = e.target.closest('[data-repl-no]'); if (b) partInfoDialog(b.dataset.replNo, b.dataset.name); };
+  $$('[data-repl-stock]', box).forEach(x => stockSummary(x, x.dataset.replStock));
+  api('part_names', nos).then(m => $$('[data-repl-en]', box).forEach(x => {
+    if (m[x.dataset.replEn]) x.textContent = ' · ' + m[x.dataset.replEn];
+  })).catch(() => {});
 }
 
 function partInfoDialog(no, name) {
@@ -904,16 +938,17 @@ async function lookupBatch(nos) {
   const list = $('#lk-list'), info = $('#lk-info'), key = S.lookupKw;
   info.innerHTML = '';
   if (nos.length > BATCH_MAX) { list.innerHTML = `<div class="check bad">一次最多查 ${BATCH_MAX} 个物料号，这次有 ${nos.length} 个，请分几次查</div>`; return; }
-  const rows = nos.map(no => ({no, name: '', stock: null, photos: null}));  // stock / photos：null 在查，'login' 未登录，'err' 没查到
+  const rows = nos.map(no => ({no, name: '', stock: null, repl: null, photos: null}));  // stock / repl / photos：null 在查，'login' 未登录，'err' 没查到
   list.innerHTML = `<div class="row"><span class="muted small" id="lk-prog"></span>
       <button id="lk-copy" style="margin-left:auto" disabled>复制结果</button></div>
     <div id="lk-login-iwms"></div><div id="lk-login-sis"></div>
     <div class="table-wrap" style="max-height:52vh"><table class="grid compact"><thead><tr><th>物料号</th><th>名称</th>
-      <th>英格兰配件库可用</th><th>库位</th><th>其它仓可用</th><th>图片</th></tr></thead>
+      <th>英格兰配件库可用</th><th>库位</th><th>其它仓可用</th><th>替代件</th><th>图片</th></tr></thead>
       <tbody>${nos.map((no, i) => `<tr data-no="${esc(no)}" data-k="${i}"></tr>`).join('')}</tbody></table></div>`;
   const main = r => r.stock.warehouses.find(w => w.main);
   const bins = w => w ? w.locations.filter(l => l.store && !l.locked).map(l => `${l.location}×${qty(l.qty)}`) : [];
   const others = r => r.stock.warehouses.filter(w => !w.main && w.available > 0).map(w => `${w.name} ${qty(w.available)}`);
+  const repls = r => [...new Set(r.repl.flatMap(g => g.parts.map(x => x.no)))];
   const wait = v => v === null ? '<span class="muted">…</span>' : v === 'login' ? '<span class="muted">未登录</span>' : '<span class="muted">没查到</span>';
   const draw = i => {
     const r = rows[i], tr = $(`#lk-list tr[data-k="${i}"]`);
@@ -925,7 +960,8 @@ async function lookupBatch(nos) {
     tr.innerHTML = `<td class="mono">${esc(r.no)}</td><td>${esc(r.name)}</td>
       <td>${ok ? (w && w.available > 0 ? `<b class="good">${qty(w.available)}</b> ${esc(w.unit)}` : '<b class="warn">0</b>') : wait(r.stock)}</td>
       <td class="mono small">${ok ? esc(bins(w).join('、')) || '—' : ''}</td>
-      <td class="small">${ok ? esc(others(r).join('、')) || '—' : ''}</td><td>${ph}</td>`;
+      <td class="small">${ok ? esc(others(r).join('、')) || '—' : ''}</td>
+      <td class="mono small">${Array.isArray(r.repl) ? esc(repls(r).join('、')) || '<span class="muted">无</span>' : wait(r.repl)}</td><td>${ph}</td>`;
   };
   rows.forEach((_, i) => draw(i));
   list.onclick = e => {
@@ -936,11 +972,11 @@ async function lookupBatch(nos) {
     const line = r => {
       const ok = r.stock && typeof r.stock === 'object', w = ok && main(r);
       return [r.no, r.name, ok ? qty(w ? w.available : 0) : '', ok ? bins(w).join(' ') : '', ok ? others(r).join('; ') : '',
-        Array.isArray(r.photos) ? r.photos.length : ''].join('\t');
+        Array.isArray(r.repl) ? repls(r).join(' ') : '', Array.isArray(r.photos) ? r.photos.length : ''].join('\t');
     };
     const ta = document.createElement('textarea');
     ta.style.cssText = 'position:fixed;left:-9999px;top:0';
-    ta.value = ['物料号\t名称\t英格兰配件库可用\t库位\t其它仓可用\t图片数', ...rows.map(line)].join('\n');
+    ta.value = ['物料号\t名称\t英格兰配件库可用\t库位\t其它仓可用\t替代件\t图片数', ...rows.map(line)].join('\n');
     document.body.appendChild(ta);
     const ok = await copyText(ta);
     ta.remove();
@@ -951,8 +987,9 @@ async function lookupBatch(nos) {
     rows.forEach((r, i) => { if (m[r.no]) { r.name = m[r.no]; draw(i); } });
   }).catch(() => {});
   // 逐个查库存和图片
-  const login = {stock: false, photos: false};
-  const jobs = rows.flatMap((r, i) => [[i, 'stock'], [i, 'photos']]);
+  const login = {stock: false, repl: false, photos: false};
+  const jobs = rows.flatMap((r, i) => [[i, 'stock'], [i, 'repl'], [i, 'photos']]);
+  const API = {stock: 'part_stock', repl: 'part_replacements', photos: 'part_photos'};
   const total = jobs.length;
   let done = 0;
   const prog = () => { const el = $('#lk-prog'); if (el) el.textContent = done < total ? `正在查 ${nos.length} 个配件… ${Math.round(done * 100 / total)}%` : `共 ${nos.length} 个配件，点一行看详细库存和图片`; };
@@ -962,9 +999,9 @@ async function lookupBatch(nos) {
       const [i, kind] = jobs.shift(), r = rows[i];
       if (login[kind]) r[kind] = 'login';
       else {
-        const res = await api(kind === 'stock' ? 'part_stock' : 'part_photos', r.no).catch(() => null);
+        const res = await api(API[kind], r.no).catch(() => null);
         if (res && res.need_login) { login[kind] = true; r[kind] = 'login'; }
-        else r[kind] = !res ? 'err' : kind === 'stock' ? res : res.photos;
+        else r[kind] = !res ? 'err' : kind === 'stock' ? res : kind === 'repl' ? res.rows : res.photos;
       }
       if (S.lookupKw !== key) return;
       done++; draw(i); prog();
@@ -976,7 +1013,7 @@ async function lookupBatch(nos) {
   $('#lk-copy').disabled = false;
   const again = () => { if (S.lookupKw === key) lookupBatch(nos); };
   if (login.stock) loginPrompt($('#lk-login-iwms'), 'iWMS', 'iwms_login', '三一统一登录，约 24 小时有效', again);
-  if (login.photos) loginPrompt($('#lk-login-sis'), 'SIS', 'sis_login', 'SIS 登录 12 小时有效', again);
+  if (login.photos || login.repl) loginPrompt($('#lk-login-sis'), 'SIS', 'sis_login', 'SIS 登录 12 小时有效', again);
 }
 
 // 缩小的配件图片（地址带 imageMogr2，由 SIS 的图片服务器缩小）万一打不开，就退回原图

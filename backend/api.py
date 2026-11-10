@@ -290,6 +290,13 @@ class Api:
         except NeedLogin as e:
             return {"need_login": True, "message": str(e)}
 
+    def part_replacements(self, part_no):
+        """SIS 里这个配件的替代件。SIS 没登录 / 过期时返回 need_login。"""
+        try:
+            return {"rows": self._sis.replacements(part_no or "")}
+        except NeedLogin as e:
+            return {"need_login": True, "message": str(e)}
+
     def part_stock(self, part_no):
         """iWMS 里这个配件在英国各仓（英格兰配件库优先）的库存和库位。没登录 / 过期时返回 need_login。"""
         try:
