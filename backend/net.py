@@ -2,7 +2,9 @@
 
 同一个网站的连接会复用（不用每次重新握手，连续查库存、图片更快），连接没建立起来时自动重试；
 请求已经发出去的不重试，不会重复提交。代理和证书照旧跟系统走（同以前的 urllib）：
-代理读系统设置 / 环境变量，证书用系统默认的证书库（公司网络装了自己的根证书也能用）。
+代理读系统设置 / 环境变量；证书用 truststore 读操作系统的证书库（Mac 钥匙串、Windows 证书存储，
+公司网络装了自己的根证书也能用）。不用 Python 自带的默认证书路径：Mac 安装包里那个路径指向打包机器，
+用户电脑上不存在，一张根证书都没有，所有 HTTPS 都会报 CERTIFICATE_VERIFY_FAILED。
 """
 from __future__ import annotations
 
@@ -14,6 +16,7 @@ import urllib.request
 from typing import Any, Iterator
 
 import httpx
+import truststore
 
 RETRIES = 2
 TIMEOUT = 30
@@ -37,7 +40,7 @@ def _client(url: str) -> httpx.Client:
     with _lock:
         if proxy not in _clients:
             _clients[proxy] = httpx.Client(
-                transport=httpx.HTTPTransport(verify=ssl.create_default_context(), proxy=proxy or None,
+                transport=httpx.HTTPTransport(verify=truststore.SSLContext(ssl.PROTOCOL_TLS_CLIENT), proxy=proxy or None,
                                               retries=RETRIES, trust_env=False),
                 timeout=TIMEOUT, follow_redirects=True, trust_env=False, headers={"User-Agent": USER_AGENT})
         return _clients[proxy]
