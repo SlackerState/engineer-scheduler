@@ -10,7 +10,7 @@ def warn_row(no, node, flag, text, secs, **kw):
     over = flag == 1
     return {"orderNumber": no, "serviceOrderId": "3F2722D9-5FDB-4828-B71D-9341BBC9957C", "currentNodeDesc": node,
             "isWarn": 1 if flag >= 0 else 0, "isOvertime": 1 if over else 0,
-            "residueOverTimeStr": f"{flag},{text}", "overTime": secs if over else None,
+            "currentNode": kw.get("code", "DEPARTURE_NODE"), "residueOverTimeStr": f"{flag},{text}", "overTime": secs if over else None,
             "residueTime": None if over else secs, "serviceOrderModeName": "直销",
             "repairMaterialOrderNos": kw.get("materials")}
 
@@ -58,6 +58,15 @@ class Board(unittest.TestCase):
         self.assertEqual((d["over"], d["warn"], d["left"]), (True, True, "73天1时"))
         self.assertEqual(d["materials"], ["3200067662", "3200085665"])
         self.assertEqual(d["d365_id"], "3f2722d9-5fdb-4828-b71d-9341bbc9957c", "D365 id 按本地的小写存")
+
+    def test_row_node_matches_card_by_code(self):
+        # 卡片叫「待完工」，单子上的节点名是「待现场完工」，要按代码对上
+        r, _ = self.board([warn_row("E", "待现场完工", -1, "3时", 10800, code="COMPLETION_NODE")])
+        self.assertEqual(r["rows"][0]["node_key"], "completion")
+        self.assertIn("completion", [n["key"] for n in r["nodes"]])
+        # 没见过的代码按名字对：「待接收」的单
+        r, _ = self.board([warn_row("F", "待接收", -1, "1时", 3600, code="ACCEPT_NODE")])
+        self.assertEqual(r["rows"][0]["node_key"], "acceptance")
 
     def test_node_cards(self):
         r, _ = self.board([])

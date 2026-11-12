@@ -29,8 +29,18 @@ BUSINESS_UNIT = "R06"  # 欧洲大区事业部
 REGION = "N029"  # 英国国区
 PAGE = 200
 MAX_PAGES = 10
-# 节点：接口里的键 → 显示名（顺序即流程顺序）
+# 节点：统计接口里的键 → 卡片上的名字（顺序即流程顺序）。每单的节点按 currentNode 代码对应（DEPARTURE_NODE → departure），
+# 不按名字：卡片叫「待完工」，单子上却是「待现场完工」
 NODES = [("acceptance", "待接收"), ("departure", "待出发"), ("arriving", "待到达"), ("completion", "待完工")]
+
+
+def _node_key(r: dict) -> str:
+    """这单在哪个节点卡片下：按 currentNode 代码（DEPARTURE_NODE → departure）；代码对不上时按名字（「待现场完工」含「完工」）。"""
+    key = (r.get("currentNode") or "").removesuffix("_NODE").lower()
+    if key in dict(NODES):
+        return key
+    desc = r.get("currentNodeDesc") or ""
+    return next((k for k, name in NODES if name[1:] in desc), key)
 
 
 def _left(s: str) -> str:
@@ -54,6 +64,7 @@ def _row(r: dict) -> dict:
         "channel": r.get("sourceChannelDesc") or "",
         "created": r.get("createDonStr") or "",
         "node": r.get("currentNodeDesc") or "",
+        "node_key": _node_key(r),
         "status": r.get("orderStatusDesc") or "",
         "pause": r.get("repairPauseReasonDesc") or "",
         "warn": str(r.get("isWarn")) == "1",

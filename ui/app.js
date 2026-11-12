@@ -569,12 +569,12 @@ async function loadQuick() {
 
 function renderQuick() {
   const r = S.quickData, f = S.quick;
-  $('#q-nodes').innerHTML = r.nodes.map(n => `<div class="q-node click ${f.node === n.name ? 'on' : ''}" data-node="${esc(n.name)}" title="只看${esc(n.name)}的单，再点一次取消">
+  $('#q-nodes').innerHTML = r.nodes.map(n => `<div class="q-node click ${f.node === n.key ? 'on' : ''}" data-node="${esc(n.key)}" title="只看${esc(n.name)}的单，再点一次取消">
     <div class="row"><b>${esc(n.name)}</b><span class="q-count">${n.count}</span></div>
     <div class="row small"><span class="muted">触发预警 <b class="${n.warn ? 'warn' : ''}">${n.warn}</b></span>
       <span class="muted">已超时 <b class="${n.over ? 'bad' : ''}">${n.over}</b></span>
       ${n.key === 'completion' ? `<span class="muted">暂停维修 <b>${n.pause}</b></span>` : ''}</div></div>`).join('');
-  const inNode = r.rows.filter(x => !f.node || x.node === f.node);
+  const inNode = r.rows.filter(x => !f.node || x.node_key === f.node);  // 按节点代码：卡片「待完工」的单子上叫「待现场完工」
   $('#q-chips').innerHTML = Q_FLAGS.map(([k, label]) => `<button class="chip ${f.flag === k ? 'on' : ''}" data-flag="${k}">${label} <b>${
     inNode.filter(x => !k || qFlag(x) === k).length}</b></button>`).join('');
   const rows = inNode.filter(x => !f.flag || qFlag(x) === f.flag);
