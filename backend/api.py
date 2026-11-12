@@ -14,6 +14,7 @@ from .browser import Browser, NeedLogin
 from .d365 import D365, normalize
 from .db import DB, ORDER_EDITABLE, ORDER_STATUSES, SLOTS, STATUSES, app_dir
 from .sync import D365_COLUMNS, Syncer
+from .gsc import Gsc
 from .iwms import Iwms
 from .sis import Sis
 from .udesk import SOURCE_CHANNELS, Udesk
@@ -45,6 +46,7 @@ class Api:
         self._sis = Sis(self._browser, self._db.settings)
         self._refreshed: dict[int, float] = {}  # 工单 id → 上次打开详情时从 D365 刷新的时间
         self._iwms = Iwms(self._browser, self._db.settings, self._db.set_raw_setting)
+        self._gsc = Gsc(self._browser, self._db.settings, self._db.set_raw_setting)
         self._sync = Syncer(self._db, self._d365)
         self._updater = Updater(self._db.settings)
         self._updater.cleanup_old()
@@ -109,6 +111,7 @@ class Api:
         """给界面的设置：去掉登录 token。"""
         s = self._db.settings()
         s.pop("iwms_token", None)
+        s.pop("gsc_token", None)
         return s
 
     # ---------- 人员 ----------
@@ -311,6 +314,31 @@ class Api:
         except NeedLogin as e:
             raise RuntimeError(str(e)) from e
 
+    # ---------- 维修三快（GSC 维修调度） ----------
+    def gsc_board(self):
+        """GSC 维修调度：直销和合资公司的单在各节点的单数、预警、超时，和每单明细。
+        已在订单清单里的单带上本地 id，点单号直接打开详情。GSC 没登录 / 过期时返回 need_login。"""
+        try:
+            r = self._gsc.board()
+        except NeedLogin as e:
+            return {"need_login": True, "message": str(e)}
+        for row in r["rows"]:
+            o = self._db.one("SELECT id FROM orders WHERE d365_id=? OR (service_order_no=? AND service_order_no<>'')",
+                             (row["d365_id"], row["order_no"]))
+            row["order_id"] = o["id"] if o else None
+        return r
+
+    def gsc_open(self, d365_id):
+        """打开三快列表里不在本地的单：同「查工单」打开结果，只查看、不进订单清单。"""
+        return self.open_d365_order(d365_id)
+
+    def gsc_login(self):
+        """弹出浏览器窗口让用户登录 GSC 指挥中心（三一统一登录），登录后窗口自动关闭。"""
+        try:
+            return self._gsc.login()
+        except NeedLogin as e:
+            raise RuntimeError(str(e)) from e
+
     def sis_login(self):
         """弹出浏览器窗口让用户登录 SIS（有验证码，需要本人操作），登录后窗口自动关闭。"""
         try:
@@ -494,6 +522,9 @@ class Api:
                 s = self._sis.status()
                 return {"ok": s["logged_in"], "message": f"已登录，{s['expires']} 前有效" if s["logged_in"]
                         else "未登录或登录已过期（SIS 登录 12 小时有效）"}
+            if site == "gsc":
+                s = self._gsc.status()
+                return {"ok": s["logged_in"], "message": "已登录" if s["logged_in"] else "未登录或登录已过期"}
             if site == "iwms":
                 s = self._iwms.status()
                 return {"ok": s["logged_in"], "message": "已登录" if s["logged_in"]

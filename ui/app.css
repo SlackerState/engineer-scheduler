@@ -158,6 +158,14 @@ td.st-blank { color: var(--muted); }
 .kpi b { display: block; font-size: 26px; }
 .kpi.z b { color: var(--bad); }
 .kpi.o b { color: var(--warn); }
+.q-nodes { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; margin-bottom: 12px; }
+.q-node { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 10px 16px; display: grid; gap: 6px; }
+.q-node .row { justify-content: space-between; }
+.q-node.click { cursor: pointer; }
+.q-node.click:hover, .q-node.on { border-color: var(--accent); }
+.q-node.on { box-shadow: inset 0 0 0 1px var(--accent); }
+.q-count { font-size: 26px; font-weight: 700; }
+.q-node .bad { color: var(--bad); font-weight: 600; }
 
 .menu { max-width: 360px; max-height: 80vh; overflow: auto; }
 .menu-head { font-size: 11px; color: var(--muted); padding: 6px 10px 2px; }

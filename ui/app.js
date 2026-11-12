@@ -111,7 +111,7 @@ function show(view) {
   S.view = view;
   $$('#nav a').forEach(a => a.classList.toggle('on', a.dataset.view === view));
   $$('.view').forEach(v => v.classList.toggle('on', v.id === 'v-' + view));
-  ({orders: loadOrders, search: loadSearch, schedule: loadSchedule, workload: loadWorkload, today: loadToday, parts: loadParts,
+  ({orders: loadOrders, search: loadSearch, schedule: loadSchedule, workload: loadWorkload, today: loadToday, quick: loadQuick, parts: loadParts,
     people: loadPeople, settings: loadSettings})[view]();
 }
 
@@ -543,6 +543,55 @@ async function loadToday() {
       <td class="wrap">${esc(o.address)}</td></tr>`).join('') + '</tbody>'
     : '<tr><td class="empty">这一天没有上门的工单（没定计划的单在「排班表」下方的待排期列表里）</td></tr>';
   await loadCreated();
+}
+
+// ======================= 维修三快（GSC 维修调度） =======================
+// 直销 + 合资公司的单：顶部四个节点的单数 / 预警 / 超时，下面每单一行，超时的排最前
+S.quick = {node: '', flag: ''};
+const Q_FLAGS = [['', '全部'], ['over', '已超时'], ['warn', '预警'], ['ok', '正常']];
+const qFlag = r => r.over ? 'over' : r.warn ? 'warn' : 'ok';
+
+async function loadQuick() {
+  $('#q-time').textContent = '正在查 GSC…';
+  const r = await safe(() => api('gsc_board'));
+  $('#q-time').textContent = '';
+  if (!r) return;
+  if (r.need_login) {
+    $('#q-nodes').innerHTML = $('#q-chips').innerHTML = $('#q-table').innerHTML = '';
+    loginPrompt($('#q-login'), 'GSC', 'gsc_login', '三一统一登录', loadQuick);
+    return;
+  }
+  $('#q-login').innerHTML = '';
+  S.quickData = r;
+  $('#q-time').textContent = `${r.checked} 更新 · 共 ${r.total} 单`;
+  renderQuick();
+}
+
+function renderQuick() {
+  const r = S.quickData, f = S.quick;
+  $('#q-nodes').innerHTML = r.nodes.map(n => `<div class="q-node click ${f.node === n.name ? 'on' : ''}" data-node="${esc(n.name)}" title="只看${esc(n.name)}的单，再点一次取消">
+    <div class="row"><b>${esc(n.name)}</b><span class="q-count">${n.count}</span></div>
+    <div class="row small"><span class="muted">触发预警 <b class="${n.warn ? 'warn' : ''}">${n.warn}</b></span>
+      <span class="muted">已超时 <b class="${n.over ? 'bad' : ''}">${n.over}</b></span>
+      ${n.key === 'completion' ? `<span class="muted">暂停维修 <b>${n.pause}</b></span>` : ''}</div></div>`).join('');
+  const inNode = r.rows.filter(x => !f.node || x.node === f.node);
+  $('#q-chips').innerHTML = Q_FLAGS.map(([k, label]) => `<button class="chip ${f.flag === k ? 'on' : ''}" data-flag="${k}">${label} <b>${
+    inNode.filter(x => !k || qFlag(x) === k).length}</b></button>`).join('');
+  const rows = inNode.filter(x => !f.flag || qFlag(x) === f.flag);
+  const left = x => `<span class="badge ${x.over ? 'risk-overdue' : x.warn ? 'risk-soon' : 'risk-pool'}" title="${x.over ? '已超时' : x.warn ? '已触发预警' : '剩余时间'}">${
+    x.over ? '超时 ' : x.warn ? '预警 · 剩 ' : '剩 '}${esc(x.left)}</span>`;
+  $('#q-table').innerHTML = rows.length ? `<thead><tr><th>订单编号</th><th>当前节点</th><th>剩余 / 超时</th><th>订单状态</th><th>工程师</th>
+    <th>客户</th><th>设备</th><th>召请类型</th><th>创建时间</th><th>借料 / 领料单</th></tr></thead><tbody>` + rows.map(x => `
+    <tr class="click" data-q-open="${esc(x.d365_id)}" ${x.order_id ? `data-order="${x.order_id}"` : ''}>
+      <td class="mono nowrap"><u>${esc(x.order_no)}</u>${x.mode !== '直销' ? `<span class="tag">${esc(x.mode)}</span>` : ''}</td>
+      <td class="nowrap">${esc(x.node)}</td><td class="nowrap">${left(x)}${x.explain ? `<div class="muted small wrap">${esc(x.explain)}</div>` : ''}</td>
+      <td class="nowrap">${esc(x.status)}${x.pause ? `<div class="muted small">${esc(x.pause)}</div>` : ''}</td>
+      <td class="nowrap">${esc(x.engineer) || '<span class="muted">未派工</span>'}</td>
+      <td>${esc(x.customer)}</td><td class="mono nowrap">${esc(x.equipment)}</td>
+      <td class="nowrap">${esc(x.summon)}<div class="muted small">${esc(x.fault)}</div></td>
+      <td class="nowrap">${esc(x.created.slice(5, 16))}</td>
+      <td class="mono small">${x.materials.map(esc).join('<br>') || '<span class="muted">—</span>'}</td></tr>`).join('') + '</tbody>'
+    : `<tr><td class="empty">${r.rows.length ? '没有符合条件的单' : 'GSC 维修调度里现在没有直销 / 合资公司的单'}</td></tr>`;
 }
 
 // 按创建日期查工单：选中日期及之后创建的工单；表头下一行可按各列筛选（在本页内筛，不重新查询）
@@ -1615,6 +1664,7 @@ async function loadSettings() {
   // iWMS、SIS 查得快，打开设置就看一下；D365 看同步状态，要确认点「检查」
   checkSite('iwms');
   checkSite('sis');
+  checkSite('gsc');
 }
 
 async function saveSettings(e) {
@@ -1639,6 +1689,7 @@ const SITES = [
   {key: 'd365', name: 'D365', use: '同步工单、派工、配件和借料', hint: '公司账号 + MFA；没登录时点「同步 D365」也会弹出登录窗口'},
   {key: 'iwms', name: 'iWMS', use: '查英国各仓的配件库存和库位', hint: '三一统一登录，约 24 小时有效；登录后自动切到「海外iWMS查询」角色'},
   {key: 'sis', name: 'SIS', use: '查配件图片', hint: '账号 + 验证码，12 小时有效'},
+  {key: 'gsc', name: 'GSC', use: '维修三快（GSC 指挥中心的维修调度）', hint: '三一统一登录'},
 ];
 
 function renderSites() {
@@ -1831,6 +1882,19 @@ async function init() {
   $('#lk-kw').onkeydown = e => { if (e.key === 'Enter') lookupPart(); };
   $('#p-tabs').onclick = e => { const b = e.target.closest('[data-tab]'); if (b) { S.partsTab = b.dataset.tab; loadParts(); } };
   $('#b-email').onclick = openBorrowEmail;
+  $('#q-refresh').onclick = loadQuick;
+  $('#q-open').onclick = () => api('open_url', 'https://bop-gsc.sanyglobal.com/dispath-center/scheduling-overview');
+  $('#q-nodes').onclick = e => {
+    const c = e.target.closest('[data-node]'); if (!c) return;
+    S.quick.node = S.quick.node === c.dataset.node ? '' : c.dataset.node; renderQuick();
+  };
+  $('#q-chips').onclick = e => { const c = e.target.closest('[data-flag]'); if (c) { S.quick.flag = c.dataset.flag; renderQuick(); } };
+  $('#q-table').onclick = async e => {
+    const tr = e.target.closest('tr[data-q-open]'); if (!tr) return;
+    if (tr.dataset.order) return;  // 已在本地的单由 #main 上的 data-order 处理打开
+    const id = await safe(() => api('gsc_open', tr.dataset.qOpen));  // 不在本地的单：同「查工单」打开，只查看
+    if (id) openOrder(id);
+  };
   $('#b-chips').onclick = e => { const c = e.target.closest('[data-state]'); if (c) { S.borrowState = c.dataset.state; loadBorrows(); } };
   ['#c2-from', '#c2-to', '#c2-eng', '#c2-only'].forEach(s => ($(s).onchange = loadCharges));
   $('#c2-from').value = addDays(S.boot.today, -30);

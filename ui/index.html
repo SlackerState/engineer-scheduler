@@ -18,6 +18,7 @@
     <a data-view="schedule">排班表</a>
     <a data-view="workload">工作量</a>
     <a data-view="today">今日查询</a>
+    <a data-view="quick">维修三快</a>
     <a data-view="parts">配件</a>
     <a data-view="people">人员</a>
     <a data-view="settings">设置</a>
@@ -130,6 +131,19 @@
   </header>
   <div id="c-hint" class="check" hidden></div>
   <div class="table-wrap"><table class="grid" id="c-table"></table></div>
+</section>
+
+<section id="v-quick" class="view">
+  <header class="bar">
+    <h1>维修三快</h1>
+    <div class="tools"><span id="q-time" class="muted small"></span><button id="q-refresh">刷新</button>
+      <button id="q-open" title="在浏览器里打开 GSC 指挥中心的维修调度页">打开 GSC</button></div>
+  </header>
+  <p class="muted small note">数据来自 GSC 指挥中心「调度中心 → 维修调度」，只算直销和合资公司的单（英国国区，不含服务经销商）。每个节点（接收、出发、到达、完工）GSC 都有时限：快到时限算「预警」，过了算「超时」。点节点卡片只看这个节点；点单号打开工单详情。</p>
+  <div id="q-login"></div>
+  <div class="q-nodes" id="q-nodes"></div>
+  <div class="row chips" id="q-chips"></div>
+  <div class="table-wrap"><table class="grid" id="q-table"></table></div>
 </section>
 
 <section id="v-parts" class="view">
