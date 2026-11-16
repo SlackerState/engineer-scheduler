@@ -257,6 +257,21 @@ class Browser:
             return data
         return self._run(fn)
 
+    def eval_d365(self, base: str, js: str, arg=None, timeout: float = 300):
+        """在 D365 页面上下文里执行一段脚本（同 fetch_json 的页面、同样的登录状态），返回脚本的结果。"""
+        def fn():
+            s = self.get_settings()
+            ctx = self._ensure(headed=not s.get("headless", True))
+            page = self._api_page
+            if page is None or page.is_closed() or urlparse(page.url).netloc != urlparse(base).netloc:
+                page = self._api_page = self._open_api_page(ctx, base)
+            r = page.evaluate(js, arg)
+            if isinstance(r, dict) and r.get("status") == 401:
+                self._api_page = None
+                raise NeedLogin("D365 拒绝访问（HTTP 401），请重新登录")
+            return r
+        return self._run(fn, timeout=timeout)
+
     def save_state(self):
         def fn():
             if self._ctx:

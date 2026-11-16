@@ -638,6 +638,14 @@ class Api:
             if s.get("d365_to_dispatch", True):
                 self._sync.sync_dispatch(row, engineers)
 
+    def order_word(self, oid):
+        """下载这单的电子工单（Word），同 D365 服务订单「服务完工」标签页的「下载 Word」。只读，不改 D365。"""
+        o = self._db.one("SELECT d365_id FROM orders WHERE id=?", (int(oid),))
+        if not o or not o["d365_id"]:
+            raise ValueError("这条订单不是从 D365 同步来的，没有电子工单")
+        name, data = self._d365_call(self._d365.service_order_word, o["d365_id"])
+        return self._save_xlsx(data, name, "Word 文件 (*.docx)")
+
     def d365_engineers(self, oid, keyword=""):
         o = self._d365_order(oid)
         rows = self._d365.engineer_list(o["d365_id"], keyword or "")
@@ -690,12 +698,12 @@ class Api:
         return self._save_xlsx(excel_io.export_workbook(self._db, start, int(days)),
                                f"工程师排班表_{date.today():%Y%m%d}.xlsx")
 
-    def _save_xlsx(self, data: bytes, name: str):
+    def _save_xlsx(self, data: bytes, name: str, file_type: str = "Excel 文件 (*.xlsx)"):
         """桌面模式弹保存对话框；网页模式把内容交给前端下载。"""
         if self._window is not None:
             import webview
             path = self._window.create_file_dialog(webview.SAVE_DIALOG, save_filename=name,
-                                                   file_types=("Excel 文件 (*.xlsx)",))
+                                                   file_types=(file_type,))
             if not path:
                 return {"saved": False}
             path = path if isinstance(path, str) else path[0]

@@ -330,6 +330,7 @@ async function openOrder(id) {
   d.innerHTML = `
     <h2>${o.id ? '订单 ' + esc(o.service_order_no || o.udesk_no || '#' + o.id) : '手工新增订单'}
       ${o.d365_link ? '<button class="link" id="od-open">在 D365 打开 ↗</button>' : ''}
+      ${fromD365 ? '<button class="link" id="od-word" title="同 D365「服务完工」标签页的电子工单：按 D365 的模板生成，含现场照片">下载电子工单 (Word)</button>' : ''}
       <button class="x" id="od-close">关闭</button></h2>
     ${o.search_only ? '<div class="check warn-box row"><span>这单是从「查工单」打开的，没有进订单清单、排班和统计。在这单上做了 D365 操作后会自动加入。</span><button id="od-keep" style="margin-left:auto">加入订单清单</button></div>' : ''}
     ${fromD365 ? d365ActionsHtml(o) + visitPlanHtml(o) +
@@ -355,6 +356,13 @@ async function openOrder(id) {
   $('#od-close').onclick = () => (d.hidden = true);
   if (o.search_only) $('#od-keep').onclick = () => safe(async () => { await api('keep_order', o.id); toast('已加入订单清单'); loadOrders(); openOrder(o.id); });
   if ($('#od-open')) $('#od-open').onclick = () => api('open_url', o.d365_link);
+  if ($('#od-word')) $('#od-word').onclick = async () => {
+    const b = $('#od-word');
+    b.disabled = true; b.textContent = '正在生成电子工单…（照片多时要十几秒）';
+    const r = await safe(() => api('order_word', o.id));
+    b.disabled = false; b.textContent = '下载电子工单 (Word)';
+    if (r) saveFile(r);
+  };
   S.curOrder = o;
   $('#od-form').addEventListener('input', () => { $('#od-form').dataset.dirty = '1'; });
   if (fromD365) loadOrderParts(o.id).then(() => autoRefreshOrder(o.id));
@@ -1620,7 +1628,8 @@ function saveFile(r) {
   if (r.saved) { toast('已导出到 ' + r.path); return; }
   if (!r.b64) return;
   const a = document.createElement('a');
-  a.href = 'data:application/vnd.openxmlformats-officedocument.spreadsheetml.sheet;base64,' + r.b64;
+  const mime = /\.docx$/i.test(r.name) ? 'wordprocessingml.document' : 'spreadsheetml.sheet';
+  a.href = `data:application/vnd.openxmlformats-officedocument.${mime};base64,` + r.b64;
   a.download = r.name; a.click();
 }
 

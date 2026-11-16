@@ -6,6 +6,7 @@
 """
 from __future__ import annotations
 
+import base64
 import json
 from datetime import datetime, timezone
 from urllib.parse import quote
@@ -56,6 +57,65 @@ def _q(v: str) -> str:
     return v.replace("'", "''")
 
 
+
+# 电子工单（服务订单表单「服务完工」标签页里的 docviewer.html，ActionName = ServiceOrderTemplate）：
+#   POST /api/data/v9.1/ms_GenerateFileTemplateData {EntityID, EntityName, ActionName}
+#     → File：{"FileName", "Url" 模板 Word（mcs_servicetemplates 的 mcs_wordattachment）}，Data：要填进模板的字段 + ImageData 现场照片
+#   照片三张一行；模板用 docxtemplater 填，照片用它的图片模块。脚本库直接用 D365 网页自己的（同一版本），生成的文件和网页上下载的一样
+WORD_JS = """
+async ([id]) => {
+  const LIB = '/WebResources/mcs_/CommonCore/Scripts/';
+  const load = src => new Promise((ok, bad) => { const s = document.createElement('script'); s.src = src; s.onload = ok;
+    s.onerror = () => bad(new Error('加载 D365 脚本失败：' + src)); document.head.appendChild(s); });
+  try {
+    if (!window.PizZip || !window.docxtemplater || !window.ImageModule)
+      for (const f of ['docxtemplater.js', 'pizzip.js', 'imagemodule.js']) await load(LIB + f);
+    const r = await fetch('/api/data/v9.1/ms_GenerateFileTemplateData', {method: 'POST', credentials: 'include',
+      headers: {'Content-Type': 'application/json; charset=utf-8', Accept: 'application/json', 'OData-Version': '4.0', 'OData-MaxVersion': '4.0'},
+      body: JSON.stringify({EntityID: id, EntityName: 'mcs_serviceorder', ActionName: 'ServiceOrderTemplate'})});
+    if (r.status === 401) return {status: 401};
+    const j = await r.json().catch(() => ({}));
+    if (!r.ok) return {error: 'D365 生成电子工单失败：' + ((j.error && j.error.message) || r.status)};
+    if (!j.File) return {error: 'D365 里这单没有电子工单模板（服务完工标签页的「文件模板」）'};
+    const file = JSON.parse(j.File), data = JSON.parse(j.Data || '{}');
+    const MIME = {jpg: 'image/jpg', jpeg: 'image/jpg', png: 'image/png', gif: 'image/gif', bmp: 'image/bmp'};
+    const dataUrl = blob => new Promise(ok => { const fr = new FileReader(); fr.onloadend = () => ok(fr.result); fr.readAsDataURL(blob); });
+    const img = data.ImageData ? JSON.parse(data.ImageData) : null, list = (img && img.Results) || [];
+    for (const it of list) it.ImageBase64 = await dataUrl(await (await fetch(it.ImageUrl)).blob());
+    const rows = [];
+    for (let i = 0; i < list.length; i += 3) {
+      const line = {};
+      for (let k = 0; k < 3; k++) {
+        const it = list[i + k], ext = it ? String(it.Name || '').split('.').pop().toLowerCase() : '';
+        line['imgName_' + k] = it ? it.Name : '';
+        line['imgBase64_' + k] = it ? it.ImageBase64.replace(/^data:.*?;base64,/, 'data:' + (MIME[ext] || 'image/png') + ';base64,') : '';
+        line['imgCreateTime_' + k] = it ? new Date(Date.parse(it.CreateTime + 'Z')).toLocaleString() : '';
+      }
+      rows.push(line);
+    }
+    data.ImageData = rows;
+    const tpl = await fetch(file.Url, {credentials: 'include'});
+    if (!tpl.ok) return {error: '下载电子工单模板失败（HTTP ' + tpl.status + '）'};
+    const doc = new window.docxtemplater();
+    doc.loadZip(new PizZip(await tpl.arrayBuffer()));
+    doc.linebreaks = true;
+    const toBuf = d => {
+      const m = /^data:image\\/(png|jpg|gif|bmp|svg|svg\\+xml);base64,/;
+      if (!m.test(d)) return false;
+      const bs = atob(d.replace(m, '')), u = new Uint8Array(bs.length);
+      for (let i = 0; i < bs.length; i++) u[i] = bs.charCodeAt(i);
+      return u.buffer;
+    };
+    doc.attachModule(new ImageModule({getImage: tag => toBuf(tag), getSize: () => [100, 100]}));
+    doc.render(data);
+    const out = doc.getZip().generate({type: 'blob', mimeType: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'});
+    return {name: String(file.FileName || id + '.docx').toLowerCase(), b64: (await dataUrl(out)).split(',')[1]};
+  } catch (e) {
+    return {error: '生成电子工单出错：' + (e && e.message || e)};
+  }
+}
+"""
+
 class D365:
     def __init__(self, browser: Browser, get_settings):
         self.browser = browser
@@ -85,6 +145,13 @@ class D365:
     def login(self):
         appid = self.get_settings().get("d365_appid") or ""
         self.browser.interactive_login(self.base, f"{self.base}/main.aspx" + (f"?appid={appid}" if appid else ""))
+
+    def service_order_word(self, rid: str) -> tuple[str, bytes]:
+        """服务订单「服务完工」标签页的「电子工单」Word：和 D365 页面上点「下载 Word」生成的一样。返回 (文件名, 内容)。"""
+        r = self.browser.eval_d365(self.base, WORD_JS, [rid.strip("{}").lower()], timeout=240)
+        if r.get("error"):
+            raise RuntimeError(r["error"])
+        return r["name"], base64.b64decode(r["b64"])
 
     def record_url(self, rid: str, entity: str = "mcs_serviceorder") -> str:
         appid = self.get_settings().get("d365_appid") or ""
